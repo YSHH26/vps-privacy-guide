@@ -135,6 +135,20 @@ class OrchestratorTests(unittest.TestCase):
                     vps.reinstall(s,root/'target.json','ubuntu-test','my-vps:192.0.2.1:1')
             self.assertEqual([call.args[1] for call in api.call_args_list],['getAvailableOS'])
 
+    def test_reinstall_discard_skips_backup_only_when_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); root.chmod(0o700)
+            s={'ssh_alias':'my-vps','ip':'192.0.2.1','veid':1,'backup_restore_verified':True,
+               'identity_file':str(root/'key'),'provider_capabilities':{'baseline_boot_id':'b','destructive_contracts':{}}}
+            with patch.object(vps,'require_provider_readiness'),patch.object(vps,'target_info'),patch.object(vps,'api',return_value={'templates':['ubuntu-test']}):
+                with self.assertRaises(KeyError):
+                    vps.reinstall(dict(s),root/'target.json','ubuntu-test','my-vps:192.0.2.1:1')
+                with patch.object(vps,'ssh',side_effect=RuntimeError('stop-here')):
+                    with self.assertRaisesRegex(RuntimeError,'stop-here'):
+                        vps.reinstall(s,root/'target.json','ubuntu-test','my-vps:192.0.2.1:1',discard_existing_data=True)
+            self.assertEqual(s['backup_waived']['reason'],'owner-discarded-existing-data')
+            self.assertNotIn('backup_restore_verified',s)
+
     def test_reinstall_requires_fresh_bound_provider_readiness(self):
         s={'ssh_alias':'my-vps','ip':'192.0.2.1','veid':1}
         with patch.object(vps,'api') as api:

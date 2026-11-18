@@ -71,6 +71,8 @@ python3 scripts/vps.py --state private/target.json provider-proof
 python3 scripts/vps.py --state private/target.json reinstall --os-template __OFFICIAL_OS_TEMPLATE__ --confirm-target __SSH_ALIAS__:__EXPECTED_IP__:__VEID__
 ```
 
+如果服务器上的旧数据你确定不要了（例如上一轮的测试部署），可以在 `reinstall` 后面加 `--discard-existing-data`。加了它，脚本就不再要求加密备份和恢复记录，但会在目标状态里写入 `backup_waived`，记下你放弃了旧数据。其他核对一项不少：提供商证明、目标确认、旧 boot ID 都照常检查。这个开关只用在你真的愿意丢掉整台服务器数据的时候；`legacy_backup.py` 目前只能备份旧版 3x-ui 实例，不能备份本项目的 S-UI 部署。
+
 上面的确认参数不含密码，但仍应只在本机终端使用。重装前通过提供商 API 重新核对实例标识、公网 IP 与 SSH 别名映射；不一致立即停止。重装会中断代理、面板和 CLIProxyAPI，清除系统数据。
 
 重装请求发出不代表新系统已经能登录。等提供商显示运行后，再执行 `provider-proof`，通过官方 HTTPS API 获取本轮新 boot ID、公钥和端口，然后执行 `bootstrap`。API 证明仅十五分钟有效，绑定目标与本轮重装，不能复用旧系统的资料：

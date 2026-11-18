@@ -307,7 +307,7 @@ def provider_proof(s,state_path):
     print('Official provider read capabilities and private host proof verified; destructive contracts are recorded separately.')
 
 
-def reinstall(s, state_path, template, confirmation):
+def reinstall(s, state_path, template, confirmation, discard_existing_data=False):
     expected = f"{s['ssh_alias']}:{s['ip']}:{s['veid']}"
     if confirmation != expected: raise ValueError('Explicit target confirmation required')
     require_provider_readiness(s)
@@ -315,9 +315,14 @@ def reinstall(s, state_path, template, confirmation):
     available = api(s, 'getAvailableOS')
     if not template or template not in available.get('templates', []):
         raise ValueError('OS template not in provider response')
-    check_backup(s['encrypted_backup'],s.get('encrypted_backup_sha256'))
-    # The caller must keep a restore-tested backup; format alone cannot prove recoverability.
-    if not s.get('backup_restore_verified'): raise ValueError('Record a successful backup restore test first')
+    if discard_existing_data:
+        # Owner explicitly chose to lose all data on this target; record it instead of faking a backup.
+        s['backup_waived'] = {'at': time.time(), 'reason': 'owner-discarded-existing-data'}
+        s.pop('backup_restore_verified', None)
+    else:
+        check_backup(s['encrypted_backup'],s.get('encrypted_backup_sha256'))
+        # The caller must keep a restore-tested backup; format alone cannot prove recoverability.
+        if not s.get('backup_restore_verified'): raise ValueError('Record a successful backup restore test first')
     boot = ssh(s, 'cat /proc/sys/kernel/random/boot_id', text=True).stdout.strip()
     if not re.fullmatch(r'[0-9a-f-]{36}', boot): raise ValueError('Cannot record old boot identity')
     if boot != s['provider_capabilities']['baseline_boot_id']:
@@ -678,6 +683,7 @@ def main():
     parser.add_argument('--client',choices=['surge','v2ray','all'],default=None)
     parser.add_argument('--password-file'); parser.add_argument('--ask-password',action='store_true')
     parser.add_argument('--os-template'); parser.add_argument('--confirm-target'); parser.add_argument('--output')
+    parser.add_argument('--discard-existing-data',action='store_true',help='reinstall only: skip the backup requirement because the owner accepts losing all data')
     args = parser.parse_args()
     if (args.network_backend is not None or args.core_bin is not None) and args.stage != 'network':
         parser.error('Network backend options apply only to network')
@@ -690,6 +696,7 @@ def main():
         parser.error('Password options apply only to init/bootstrap')
     if args.client and args.stage != 'rotate-subscriptions': parser.error('--client applies only to rotate-subscriptions')
     if args.archive and args.stage != 'restore': parser.error('--archive applies only to restore')
+    if args.discard_existing_data and args.stage != 'reinstall': parser.error('--discard-existing-data applies only to reinstall')
     path = secure_path(args.state); s = private_json(path); validate(s)
     global CURRENT_STATE_PATH, CURRENT_STAGE
     CURRENT_STATE_PATH, CURRENT_STAGE = path, args.stage
@@ -699,7 +706,7 @@ def main():
         save(path.parent/'available-os.json', api(s,'getAvailableOS'))
         print('Provider target verified; details saved privately')
     elif args.stage == 'provider-proof': provider_proof(s,path)
-    elif args.stage == 'reinstall': reinstall(s, path, args.os_template, args.confirm_target)
+    elif args.stage == 'reinstall': reinstall(s, path, args.os_template, args.confirm_target, args.discard_existing_data)
     elif args.stage in {'bootstrap','init'}:
         bootstrap(s,path,initial=args.stage=='init',password_file=args.password_file,ask_password=args.ask_password)
     elif args.stage == 'network':
