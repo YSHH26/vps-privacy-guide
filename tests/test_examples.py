@@ -17,19 +17,33 @@ class ExamplesTest(unittest.TestCase):
         return json.loads(path.read_text())
 
     def test_three_matching_protocols_and_credentials(self):
-        server = {x['type']: x for x in self.config('server')['inbounds']}
-        client = {x['type']: x for x in self.config('client')['outbounds']
-                  if x['type'] != 'selector'}
-        self.assertEqual(set(server), {'anytls', 'hysteria2', 'vless'})
+        server_nodes = self.config('server')['inbounds']
+        client_nodes = [x for x in self.config('client')['outbounds'] if x['type'] != 'selector']
+        server = {x['tag'].removesuffix('-in'): x for x in server_nodes}
+        client = {x['tag']: x for x in client_nodes}
+        self.assertEqual(len(server_nodes), 3)
+        self.assertEqual(len(client_nodes), 3)
+        self.assertEqual(set(server), {'anytls', 'vless-tls', 'reality'})
         self.assertEqual(set(client), set(server))
-        for protocol in server:
-            with self.subTest(protocol=protocol):
-                self.assertEqual(server[protocol]['listen_port'], client[protocol]['server_port'])
+        expected = {'reality': ('vless', 443), 'vless-tls': ('vless', 2443),
+                    'anytls': ('anytls', 8443)}
+        for tag, (protocol, port) in expected.items():
+            with self.subTest(tag=tag):
+                self.assertEqual(server[tag]['type'], protocol)
+                self.assertEqual(client[tag]['type'], protocol)
+                self.assertEqual(server[tag]['listen_port'], port)
+                self.assertEqual(client[tag]['server_port'], port)
                 key = 'uuid' if protocol == 'vless' else 'password'
-                self.assertEqual(server[protocol]['users'][0][key], client[protocol][key])
-        self.assertEqual(server['vless']['users'][0]['flow'], client['vless']['flow'])
-        self.assertEqual(server['vless']['tls']['reality']['short_id'][0],
-                         client['vless']['tls']['reality']['short_id'])
+                self.assertEqual(server[tag]['users'][0][key], client[tag][key])
+        self.assertEqual(client['reality']['uuid'], client['vless-tls']['uuid'])
+        self.assertEqual(client['vless-tls']['flow'], 'xtls-rprx-vision')
+        self.assertNotIn('reality', client['vless-tls']['tls'])
+        self.assertNotIn('reality', server['vless-tls']['tls'])
+        self.assertEqual(server['reality']['users'][0]['flow'], client['reality']['flow'])
+        self.assertEqual(server['reality']['tls']['reality']['short_id'][0],
+                         client['reality']['tls']['reality']['short_id'])
+        selector = next(x for x in self.config('client')['outbounds'] if x['type'] == 'selector')
+        self.assertEqual(set(selector['outbounds']), set(client))
 
     def test_tls_verification_is_enabled(self):
         for node in self.config('client')['outbounds']:
@@ -37,7 +51,7 @@ class ExamplesTest(unittest.TestCase):
                 continue
             self.assertTrue(node['tls']['enabled'])
             self.assertIs(node['tls'].get('insecure', False), False)
-            if node['type'] in {'anytls', 'hysteria2'}:
+            if node['tag'] in {'anytls', 'vless-tls'}:
                 self.assertEqual(node['tls']['server_name'], '__TLS_SERVER_NAME__')
 
     def test_client_proxy_is_loopback_only(self):
@@ -49,8 +63,9 @@ class ExamplesTest(unittest.TestCase):
         self.assertTrue(path.is_file())
         compose = path.read_text()
         for binding in ['127.0.0.1:2095:2095/tcp', '127.0.0.1:2096:2096/tcp',
-                        '443:443/tcp', '443:443/udp', '8443:8443/tcp']:
+                        '443:443/tcp', '2443:2443/tcp', '8443:8443/tcp']:
             self.assertIn('"' + binding + '"', compose)
+        self.assertNotIn('443:443/udp', compose)
         self.assertIn('@sha256:', compose)
         self.assertNotIn('privileged: true', compose)
         self.assertNotIn('network_mode: host', compose)
@@ -60,7 +75,8 @@ class ExamplesTest(unittest.TestCase):
             for user in inbound['users']:
                 credential = user.get('uuid', user.get('password'))
                 self.assertRegex(credential, r'^__[A-Z_]+__$')
-        key = self.config('server')['inbounds'][2]['tls']['reality']['private_key']
+        reality = next(x for x in self.config('server')['inbounds'] if x['tag'] == 'reality-in')
+        key = reality['tls']['reality']['private_key']
         self.assertEqual(key, '__REALITY_PRIVATE_KEY__')
 
     @unittest.skipUnless(os.environ.get('VALIDATE_CORE') == '1', 'set VALIDATE_CORE=1 for Docker core checks')
@@ -87,7 +103,6 @@ class ExamplesTest(unittest.TestCase):
             values = {
                 '__SERVER_IP__': '192.0.2.1', '__TLS_SERVER_NAME__': 'example.com',
                 '__ANYTLS_PASSWORD__': 'test-only-anytls-password',
-                '__HYSTERIA_PASSWORD__': 'test-only-hysteria-password',
                 '__VLESS_UUID__': '9f740afa-195d-4cb8-b528-9dcd8529f881',
                 '__REALITY_PRIVATE_KEY__': private, '__REALITY_PUBLIC_KEY__': public,
                 '__REALITY_SHORT_ID__': '0123456789abcdef',

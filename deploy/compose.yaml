@@ -15,7 +15,7 @@ services:
       - "127.0.0.1:2096:2096/tcp"
       - "443:443/tcp"
       - "8443:8443/tcp"
-      - "443:443/udp"
+      - "2443:2443/tcp"
     healthcheck:
       test: ["CMD", "./sui", "healthcheck"]
       interval: 30s

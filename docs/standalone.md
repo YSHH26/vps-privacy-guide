@@ -10,7 +10,7 @@
 
 1. 根据 [官方安装说明](https://sing-box.sagernet.org/installation/package-manager/) 安装与 [versions.json](../versions.json) 对应的核心。
 2. 将 `examples/server.json` 复制到被 Git 忽略的 `private/server.json`；文件权限设为 600。
-3. 为 AnyTLS、Hysteria2 分别生成随机密码；生成 VLESS UUID 和 Reality 密钥对、short ID。
+3. 为 AnyTLS 生成独立随机密码；为 VLESS TLS 与 Reality 生成同一用户 UUID，并生成 Reality 密钥对、short ID。
 4. 替换全部 `__占位符__`，证书路径填写核心进程能读取的真实路径，Reality 目标按 [TLS 文档](tls.md) 选择。
 5. 配对填写 `private/client.json`，客户端只放公钥，不放服务端私钥。
 

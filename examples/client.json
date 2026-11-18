@@ -1,11 +1,25 @@
 {
-  "log": { "level": "warn", "timestamp": true },
-  "inbounds": [{ "type": "mixed", "tag": "local", "listen": "127.0.0.1", "listen_port": 1080 }],
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "local",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    }
+  ],
   "outbounds": [
     {
       "type": "selector",
       "tag": "proxy",
-      "outbounds": ["reality", "anytls", "hysteria2"],
+      "outbounds": [
+        "reality",
+        "vless-tls",
+        "anytls"
+      ],
       "default": "reality"
     },
     {
@@ -14,15 +28,24 @@
       "server": "__SERVER_IP__",
       "server_port": 8443,
       "password": "__ANYTLS_PASSWORD__",
-      "tls": { "enabled": true, "server_name": "__TLS_SERVER_NAME__", "insecure": false }
+      "tls": {
+        "enabled": true,
+        "server_name": "__TLS_SERVER_NAME__",
+        "insecure": false
+      }
     },
     {
-      "type": "hysteria2",
-      "tag": "hysteria2",
+      "type": "vless",
+      "tag": "vless-tls",
       "server": "__SERVER_IP__",
-      "server_port": 443,
-      "password": "__HYSTERIA_PASSWORD__",
-      "tls": { "enabled": true, "server_name": "__TLS_SERVER_NAME__", "insecure": false }
+      "server_port": 2443,
+      "tls": {
+        "enabled": true,
+        "server_name": "__TLS_SERVER_NAME__",
+        "insecure": false
+      },
+      "uuid": "__VLESS_UUID__",
+      "flow": "xtls-rprx-vision"
     },
     {
       "type": "vless",
@@ -35,7 +58,10 @@
         "enabled": true,
         "server_name": "__REALITY_SERVER_NAME__",
         "insecure": false,
-        "utls": { "enabled": true, "fingerprint": "chrome" },
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
         "reality": {
           "enabled": true,
           "public_key": "__REALITY_PUBLIC_KEY__",
@@ -44,5 +70,7 @@
       }
     }
   ],
-  "route": { "final": "proxy" }
+  "route": {
+    "final": "proxy"
+  }
 }

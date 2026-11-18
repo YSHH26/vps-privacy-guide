@@ -2,7 +2,7 @@
 
 ## 范围
 
-本项目是自建代理与 IP 泄露防护教程，面向购买 VPS 后自行部署的个人用户。使用 S-UI + sing-box 管理三种协议。部署前阅读 README、docs/deployment.md、docs/tls.md 和 docs/verification.md。用户明确要求的模式优先；默认使用 S-UI，不额外运行裸核心。
+本项目是自建代理与 IP 泄露防护教程，面向购买 VPS 后自行部署的个人用户。使用 S-UI + sing-box 管理 VLESS Reality、VLESS TLS 和 AnyTLS 三种协议。部署前阅读 README、docs/deployment.md、docs/tls.md 和 docs/verification.md。用户明确要求的模式优先；默认使用 S-UI，不额外运行裸核心。
 
 ## 工作流程
 
@@ -10,9 +10,11 @@
 2. 依据现有环境选择端口和证书。不得直接覆盖其他项目的 Compose、Nginx、SSH 配置或防火墙规则。
 3. 使用 versions.json 中核验过的镜像。真实凭据在部署时独立生成，写入权限受限的 private/ 或服务器状态目录；不要输出到聊天、日志、Git 或 Issue。
 4. S-UI 是面板模式配置的唯一来源。examples/ 是原生 sing-box 格式，不是 S-UI 的导入格式；未经核验不要直接写数据库或猜测 API。
-5. 面板和订阅初始只绑定回环地址；节点按协议开放 TCP/UDP。配置 IP 证书时保持证书验证，禁止为绕过错误默认设置 insecure=true。
+5. 面板和订阅后端只绑定回环地址；经 Nginx 在 TCP 9443 提供可信 HTTPS 公网入口，面板使用独立随机管理员认证。节点默认开放 TCP 443、2443、8443，不默认开放 UDP 443。配置 IP 证书时保持证书验证，禁止为绕过错误默认设置 insecure=true。
 6. 更新前备份并记录旧镜像摘要；重启会中断连接，应在实际部署时说明影响。不要默认追踪 latest 或无人值守升级核心。
-7. 执行 tests/ 和验收清单。区分静态检查、核心解析、容器健康、端到端网络测试，只有完成的层级才能报告通过。
+7. 常规操作统一使用 python3 scripts/vps.py --state private/target.json 的 preflight、deploy、verify、export；系统重装必须使用独立显式命令，核对提供商实例与 SSH/IP 一致，并有该目标的明确授权。最终从零复验必须真正重装 OS，不能以删除容器替代。
+8. CLIProxyAPI 后端回环，通过 TCP 9444 HTTPS 入口提供 /management.html 管理中心与 /v1 API；不预填上游账号。账号 HTML 只写到本机私有目录，禁止公网托管或第三方二维码服务。
+9. 执行 tests/ 和验收清单。区分静态检查、核心解析、容器健康、端到端网络测试，只有完成的层级才能报告通过。
 
 ## 仓库开发
 
