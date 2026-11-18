@@ -37,6 +37,7 @@ class FakeBackend:
         self.fail_wrong_start = fail_wrong_start
         self.accept_wrong = accept_wrong
         self.wrong_timeout = wrong_timeout
+        self.ipv6_reachable = False
     def prepare(self, image):
         if '@sha256:' not in image:
             raise AssertionError('Unpinned image')
@@ -55,6 +56,8 @@ class FakeBackend:
                         return {'ok': False, 'error': 'request_timeout'}
                     if not backend.accept_wrong:
                         return {'ok': False, 'error': 'proxy_rejected'}
+                if url in probe.IPV6_URLS and not backend.ipv6_reachable:
+                    return {'ok': False, 'error': 'proxy_rejected'}
                 return {'ok': True, 'status': 200, 'body': b'192.0.2.10' if 'ipify' in url else b'Example Domain'}
             def healthy(self):
                 return True
@@ -62,6 +65,13 @@ class FakeBackend:
 
 
 class ProbeTests(unittest.TestCase):
+    def test_reachable_ipv6_egress_fails_the_node(self):
+        backend = FakeBackend()
+        backend.ipv6_reachable = True
+        result = self.run_probe(backend)
+        self.assertEqual('failed', result['status'])
+        self.assertTrue(all(n['ipv6_egress'] == 'reachable' for n in result['nodes']))
+
     def run_probe(self, backend):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

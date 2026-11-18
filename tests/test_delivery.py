@@ -22,7 +22,7 @@ import delivery
 def fixture():
     return {'server': {'host': '192.0.2.1', 'ssh_alias': 'test-host', 'timezone': 'UTC'},
             'public_base_url': 'https://192.0.2.1:9443',
-            'subscriptions': {'surge': 'A' * 43, 'v2ray': 'B' * 43},
+            'subscriptions': {'surge': 'A' * 43, 'v2ray': 'B' * 43, 'clash': 'E' * 43},
             'nodes': [
                 {'type': 'anytls', 'name': 'AnyTLS', 'server': '192.0.2.1', 'port': 8443,
                  'password': 'test-password', 'server_name': '192.0.2.1'},
@@ -51,6 +51,79 @@ class SubscriptionTests(unittest.TestCase):
         self.assertIn('security=tls', links)
         self.assertNotIn('allowInsecure=1', links)
         self.assertNotIn('anytls://', links)
+
+    def clash(self, cfg=None):
+        text = subscription.clash_config(cfg or fixture())
+        self.assertTrue(text.startswith('# Managed by sui-vps.'))
+        return json.loads(''.join(line for line in text.splitlines(True) if not line.startswith('#')))
+
+    def test_clash_profile_nodes_rules_and_dns(self):
+        profile = self.clash()
+        proxies = {p['type'] + ('-reality' if 'reality-opts' in p else ''): p for p in profile['proxies']}
+        self.assertEqual({'anytls', 'vless', 'vless-reality'}, set(proxies))
+        for proxy in profile['proxies']:
+            self.assertIs(proxy['skip-cert-verify'], False)
+        self.assertEqual({'public-key': 'C' * 43, 'short-id': '12345678'}, proxies['vless-reality']['reality-opts'])
+        self.assertEqual('xtls-rprx-vision', proxies['vless-reality']['flow'])
+        self.assertEqual('192.0.2.1', proxies['vless']['servername'])
+        self.assertEqual('192.0.2.1', proxies['anytls']['sni'])
+        groups = {g['name']: g for g in profile['proxy-groups']}
+        self.assertEqual(['Reality', 'TLS', 'AnyTLS'], groups['AUTO']['proxies'])
+        self.assertEqual('fallback', groups['AUTO']['type'])
+        rules = profile['rules']
+        self.assertEqual('MATCH,PROXY', rules[-1])
+        self.assertLess(rules.index('GEOSITE,category-ai-!cn,AI'), rules.index('GEOSITE,cn,DIRECT'))
+        for rule in rules:
+            if rule.startswith(('IP-CIDR', 'GEOIP')):
+                self.assertTrue(rule.endswith(',no-resolve'), rule)
+        self.assertEqual('fake-ip', profile['dns']['enhanced-mode'])
+        self.assertIs(profile['dns']['respect-rules'], True)
+        self.assertIs(profile['dns']['ipv6'], False)
+        self.assertIs(profile['ipv6'], True)
+        self.assertEqual('https://192.0.2.1:9443/s/' + 'E' * 43 + '/geo/geosite.dat', profile['geox-url']['geosite'])
+
+    def test_clash_rejects_injection_and_shared_tokens(self):
+        cfg = fixture()
+        cfg['nodes'][0]['name'] = 'x,DIRECT'
+        with self.assertRaises(ValueError):
+            subscription.clash_config(cfg)
+        cfg = fixture()
+        cfg['subscriptions']['clash'] = cfg['subscriptions']['surge']
+        with self.assertRaises(ValueError):
+            subscription.clash_config(cfg)
+
+    def test_local_traffic_accumulates_across_reboot_and_period(self):
+        old = os.environ.get('TZ')
+        os.environ['TZ'] = 'UTC'
+        __import__('time').tzset()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                state = Path(tmp) / 'traffic-local.json'
+                target = {'traffic_quota_gb': 1000, 'traffic_reset_day': 5, 'traffic_count': 'both'}
+                day = 1_700_000_000  # 2023-11-14 UTC
+                first = subscription.local_traffic_snapshot(state, (100, 50), target, now=day)
+                self.assertEqual(0, first['used_bytes'])
+                self.assertEqual(1000 * 1024 ** 3, first['total_bytes'])
+                self.assertEqual(1701734400, first['reset_at'])  # 2023-12-05 00:00 UTC
+                self.assertEqual(200, subscription.local_traffic_snapshot(state, (200, 150), target, now=day + 60)['used_bytes'])
+                rebooted = subscription.local_traffic_snapshot(state, (10, 5), target, now=day + 120)
+                self.assertEqual(215, rebooted['used_bytes'])
+                for mode, expected in [('out', 105), ('in', 110), ('max', 110)]:
+                    snap = subscription.local_traffic_snapshot(state, (10, 5), {**target, 'traffic_count': mode}, now=day + 130)
+                    self.assertEqual(expected, snap['used_bytes'])
+                calibrated = subscription.local_traffic_snapshot(state, (10, 5), target, now=day + 140, calibrate_gb=2)
+                self.assertEqual(2 * 1024 ** 3, calibrated['used_bytes'])
+                self.assertEqual(2 * 1024 ** 3 + 30, subscription.local_traffic_snapshot(state, (30, 15), target, now=day + 150)['used_bytes'])
+                after_reset = subscription.local_traffic_snapshot(state, (40, 20), target, now=1701734400 + 10)
+                self.assertEqual(15, after_reset['used_bytes'])
+                with self.assertRaises(ValueError):
+                    subscription.local_traffic_snapshot(state, (1, 1), {'traffic_reset_day': 31})
+        finally:
+            if old is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = old
+            __import__('time').tzset()
 
     def test_invalid_node_cannot_inject_surge_directive(self):
         cfg = fixture()
@@ -90,6 +163,34 @@ class SubscriptionTests(unittest.TestCase):
                     with error.exception as response:
                         self.assertEqual(response.code, 404)
                 self.assertEqual(logs.getvalue(), '')
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+
+    def test_http_serves_clash_profile_and_token_bound_rule_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'export.json'
+            path.write_text(json.dumps(fixture()))
+            rules = Path(tmp) / 'rules'
+            rules.mkdir()
+            (rules / 'geosite.dat').write_bytes(b'geosite-bytes')
+            server = subscription.make_server(path, port=0, rules_dir=rules)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = 'http://127.0.0.1:' + str(server.server_port) + '/s/'
+            try:
+                with urlopen(base + 'E' * 43 + '/clash.yaml') as response:
+                    self.assertIn(b'"proxy-groups"', response.read())
+                    self.assertEqual('24', response.headers['Profile-Update-Interval'])
+                with urlopen(base + 'E' * 43 + '/geo/geosite.dat') as response:
+                    self.assertEqual(b'geosite-bytes', response.read())
+                for suffix, code in [('A' * 43 + '/geo/geosite.dat', 404), ('E' * 43 + '/geo/other.dat', 404),
+                                     ('A' * 43 + '/clash.yaml', 404), ('E' * 43 + '/geo/geoip.metadb', 503)]:
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(base + suffix)
+                    with error.exception as response:
+                        self.assertEqual(code, response.code, suffix)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -192,7 +293,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn('<script src=', html)
         self.assertNotIn('<link ', html)
         self.assertNotIn('fetch(', html)
-        self.assertEqual(html.count('data-test="local-qr"'), 5)
+        self.assertEqual(html.count('data-test="local-qr"'), 6)
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / 'private' / 'delivery.html'
             delivery.write_private(target, html)
@@ -214,3 +315,28 @@ class DeliveryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get('VALIDATE_CORE') == '1', 'Set VALIDATE_CORE=1 with Docker to parse the Clash profile using pinned mihomo')
+class ClashCoreTests(unittest.TestCase):
+    def test_pinned_mihomo_accepts_generated_profile(self):
+        import hashlib
+        import subprocess
+        versions = json.loads((Path(__file__).resolve().parents[1] / 'versions.json').read_text())
+        image, source = versions['mihomo_image'], versions['rule_data']
+        self.assertIn('@sha256:', image)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in source['files']:
+                with urlopen(source['base_url'] + name, timeout=60) as response:
+                    data = response.read()
+                with urlopen(source['base_url'] + name + '.sha256sum', timeout=60) as response:
+                    self.assertEqual(response.read().decode().split()[0], hashlib.sha256(data).hexdigest())
+                (directory / name).write_bytes(data)
+            (directory / 'config.yaml').write_text(subscription.clash_config(fixture()))
+            directory.chmod(0o755)
+            result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '-v', f'{directory}:/root/.config/mihomo:ro',
+                                     image, '-t', '-d', '/root/.config/mihomo', '-f', '/root/.config/mihomo/config.yaml'],
+                                    capture_output=True, text=True, timeout=180)
+            self.assertEqual(0, result.returncode, result.stdout[-2000:] + result.stderr[-2000:])
+            self.assertIn('test is successful', result.stdout + result.stderr)

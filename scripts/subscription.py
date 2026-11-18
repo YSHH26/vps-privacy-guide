@@ -4,6 +4,7 @@
 Run behind the deployment's HTTPS reverse proxy. Never log token-bearing URLs.
 Surge syntax: https://manual.nssurge.com/policies/anytls.html
 TLS syntax: https://manual.nssurge.com/policies/tls.html
+Mihomo syntax: https://wiki.metacubex.one/en/config/
 """
 import argparse
 import base64
@@ -25,6 +26,13 @@ import uuid
 
 TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{43,128}\Z')
 TRAFFIC_LOCK = threading.Lock()
+CLIENTS = ('surge', 'v2ray', 'clash')
+FILENAMES = {'surge': 'surge.conf', 'v2ray': 'v2ray.txt', 'clash': 'clash.yaml'}
+RULES_DIR = Path('/var/lib/sui-vps/rules')
+GEO_FILES = ('geosite.dat', 'geoip.metadb')
+PRIVATE_CIDRS = ('10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+                 '192.168.0.0/16', 'fc00::/7', 'fe80::/10')
+GIB = 1024 ** 3
 
 
 def new_token():
@@ -111,6 +119,71 @@ def vless_links(config):
     return links
 
 
+def clash_proxies(config):
+    proxies = []
+    for node in config['nodes']:
+        host, port, sni = checked_node(node)
+        if node['type'] in ('vless-reality', 'vless-tls'):
+            proxy = {'name': atom(node.get('name') or node['type']), 'type': 'vless', 'server': host, 'port': port,
+                     'uuid': str(uuid.UUID(node['uuid'])), 'network': 'tcp', 'udp': True, 'tls': True,
+                     'servername': sni, 'skip-cert-verify': False, 'client-fingerprint': 'chrome'}
+            flow = node.get('flow') or ('xtls-rprx-vision' if node['type'] == 'vless-reality' else '')
+            if flow:
+                proxy['flow'] = atom(flow)
+            if node['type'] == 'vless-reality':
+                key, short_id = atom(node['public_key']), str(node['short_id'])
+                if not re.fullmatch(r'[A-Za-z0-9_-]{43}', key) or not re.fullmatch(r'(?:[0-9a-fA-F]{2}){0,8}', short_id):
+                    raise ValueError('Invalid Reality public key or short ID')
+                proxy['reality-opts'] = {'public-key': key, 'short-id': short_id}
+        elif node['type'] == 'anytls':
+            proxy = {'name': atom(node.get('name') or node['type']), 'type': 'anytls', 'server': host, 'port': port,
+                     'password': atom(node['password']), 'udp': True, 'sni': sni,
+                     'skip-cert-verify': False, 'client-fingerprint': 'chrome'}
+        else:
+            continue
+        proxies.append(proxy)
+    if len(proxies) != 3 or len({p['name'] for p in proxies}) != 3:
+        raise ValueError('Clash needs three distinctly named exported nodes')
+    return proxies
+
+
+def clash_config(config):
+    """Mihomo profile. JSON is valid YAML, so json.dumps does all quoting/escaping."""
+    urls = subscription_urls(config)
+    server = str(ipaddress.IPv4Address(config['nodes'][0]['server']))
+    proxies = clash_proxies(config)
+    names = [p['name'] for p in proxies]
+    order = {'vless-reality': 0, 'vless-tls': 1, 'anytls': 2}
+    fallback = [n['name'] if n.get('name') else n['type'] for n in sorted(config['nodes'], key=lambda n: order[n['type']])]
+    geo = urls['clash'].rsplit('/', 1)[0] + '/geo/'
+    foreign_doh = ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query']
+    china_doh = ['https://223.5.5.5/dns-query', 'https://120.53.53.53/dns-query']
+    rules = [f'IP-CIDR,{server}/32,DIRECT,no-resolve']
+    rules += [('IP-CIDR6,' if ':' in cidr else 'IP-CIDR,') + cidr + ',DIRECT,no-resolve' for cidr in PRIVATE_CIDRS]
+    rules += ['GEOSITE,category-ai-!cn,AI', 'GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve', 'MATCH,PROXY']
+    profile = {
+        'mixed-port': 7890, 'allow-lan': False, 'mode': 'rule', 'log-level': 'warning',
+        # Keep IPv6 on so a TUN captures it; DNS returns no AAAA and the server rejects IPv6 egress.
+        'ipv6': True, 'unified-delay': True,
+        'geodata-mode': False, 'geo-auto-update': True, 'geo-update-interval': 24,
+        'geox-url': {'geosite': geo + 'geosite.dat', 'mmdb': geo + 'geoip.metadb'},
+        'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'fake-ip', 'fake-ip-range': '198.18.0.1/16',
+                'fake-ip-filter': ['+.lan', '+.local', '+.msftconnecttest.com', '+.msftncsi.com'],
+                'respect-rules': True, 'default-nameserver': ['223.5.5.5', '120.53.53.53'],
+                'proxy-server-nameserver': china_doh, 'nameserver': foreign_doh,
+                'nameserver-policy': {'geosite:cn': china_doh}},
+        'proxies': proxies,
+        'proxy-groups': [
+            {'name': 'PROXY', 'type': 'select', 'proxies': ['AUTO', *names]},
+            {'name': 'AUTO', 'type': 'fallback', 'proxies': fallback,
+             'url': 'https://www.gstatic.com/generate_204', 'interval': 300, 'lazy': True},
+            {'name': 'AI', 'type': 'select', 'proxies': ['PROXY', *names]}],
+        'rules': rules}
+    return ('# Managed by sui-vps. Rule mode + TUN is required for WebRTC/DNS protection.\n'
+            '# Real clients, DNS, IPv6, WebRTC and failure behavior still need testing.\n'
+            + json.dumps(profile, ensure_ascii=False, indent=1) + '\n')
+
+
 def v2ray_subscription(config):
     return base64.b64encode(('\n'.join(vless_links(config)) + '\n').encode()).decode() + '\n'
 
@@ -123,13 +196,12 @@ def subscription_urls(config):
     if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment or parts.path not in ('', '/'):
         raise ValueError('Subscription base must be an HTTPS origin')
     tokens = config['subscriptions']
-    for client in ('surge', 'v2ray'):
+    for client in CLIENTS:
         if not TOKEN_RE.fullmatch(tokens[client]):
             raise ValueError('Subscription token must contain at least 256 random bits')
-    if tokens['surge'] == tokens['v2ray']:
+    if len({tokens[client] for client in CLIENTS}) != len(CLIENTS):
         raise ValueError('Use independent client subscription tokens')
-    return {'surge': f'{base}/s/{tokens["surge"]}/surge.conf',
-            'v2ray': f'{base}/s/{tokens["v2ray"]}/v2ray.txt'}
+    return {client: f'{base}/s/{tokens[client]}/{FILENAMES[client]}' for client in CLIENTS}
 
 
 def provider_fetch(url, data):
@@ -182,7 +254,63 @@ def traffic_snapshot(credentials, cache, *, fetch=provider_fetch, now=None):
         return snapshot
 
 
-def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=None, traffic_cache=None):
+def period_bounds(now, reset_day):
+    """Local-time period start/next reset for a monthly reset day (1-28)."""
+    local = time.localtime(now)
+    year, month = local.tm_year, local.tm_mon
+    if local.tm_mday < reset_day:
+        year, month = (year - 1, 12) if month == 1 else (year, month - 1)
+    start = time.mktime((year, month, reset_day, 0, 0, 0, 0, 0, -1))
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    return start, time.mktime((ny, nm, reset_day, 0, 0, 0, 0, 0, -1))
+
+
+def traffic_settings(target):
+    quota = float(target.get('traffic_quota_gb', 1000))
+    reset_day = int(target.get('traffic_reset_day', 1))
+    count = target.get('traffic_count', 'both')
+    if not 0 < quota <= 1_000_000 or not 1 <= reset_day <= 28 or count not in ('both', 'out', 'in', 'max'):
+        raise ValueError('Invalid local traffic settings')
+    return quota, reset_day, count
+
+
+def local_traffic_snapshot(state_path, counters, target, *, now=None, calibrate_gb=None):
+    """Interface byte counters accumulated across reboots; resets on the configured day."""
+    now = time.time() if now is None else now
+    quota, reset_day, count = traffic_settings(target)
+    rx, tx = (int(x) for x in counters)
+    if rx < 0 or tx < 0:
+        raise ValueError('Invalid interface counters')
+    with TRAFFIC_LOCK:
+        try:
+            state = json.loads(Path(state_path).read_text())
+        except (OSError, ValueError):
+            state = {}
+        start, reset_at = period_bounds(now, reset_day)
+        if state.get('period_start') != start:
+            # Keep the last raw counters so bytes since the previous sample count toward the new period.
+            state = {'period_start': start, 'rx': 0, 'tx': 0, 'calibrated_bytes': 0,
+                     **{k: state[k] for k in ('last_rx', 'last_tx') if k in state}}
+        for key, value in (('rx', rx), ('tx', tx)):
+            last = state.get('last_' + key)
+            # A smaller counter means the interface or host restarted: count from zero.
+            delta = value if last is None or value < last else value - last
+            state[key] = int(state.get(key, 0)) + (delta if last is not None else 0)
+            state['last_' + key] = value
+        if calibrate_gb is not None:
+            if not 0 <= float(calibrate_gb) <= 1_000_000:
+                raise ValueError('Invalid calibration')
+            state.update(rx=0, tx=0, calibrated_bytes=int(float(calibrate_gb) * GIB), calibrated_at=now)
+        measured = {'both': state['rx'] + state['tx'], 'out': state['tx'], 'in': state['rx'],
+                    'max': max(state['rx'], state['tx'])}[count]
+        private_json(state_path, state)
+    return {'source': 'local-interface', 'status': 'ok', 'count': count,
+            'total_bytes': int(quota * GIB), 'used_bytes': int(state.get('calibrated_bytes', 0)) + measured,
+            'reset_at': int(reset_at), 'updated_at': now, 'checked_at': now}
+
+
+def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=None, traffic_cache=None,
+                rules_dir=RULES_DIR):
     if host != '127.0.0.1':
         raise ValueError('Subscription backend must bind 127.0.0.1')
     export_path = Path(export_path)
@@ -201,27 +329,40 @@ def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=No
             try:
                 cfg = json.loads(export_path.read_text())
                 subscription_urls(cfg)  # Validate tokens and HTTPS origin before serving.
-                match = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/(surge\.conf|v2ray\.txt)', self.path)
+                geo = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/geo/(geosite\.dat|geoip\.metadb)', self.path)
+                if geo:
+                    if not hmac.compare_digest(geo.group(1), cfg['subscriptions']['clash']):
+                        self.reply(404, b'Not found\n')
+                        return
+                    data = (Path(rules_dir) / geo.group(2)).read_bytes()
+                    if not data:
+                        raise ValueError('Empty rule data')
+                    self.reply(200, data, content_type='application/octet-stream')
+                    return
+                match = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/(surge\.conf|v2ray\.txt|clash\.yaml)', self.path)
                 if not match:
                     self.reply(404, b'Not found\n')
                     return
                 token, filename = match.groups()
-                client = 'surge' if filename == 'surge.conf' else 'v2ray'
+                client = next(name for name, value in FILENAMES.items() if value == filename)
                 if not hmac.compare_digest(token, cfg['subscriptions'][client]):
                     self.reply(404, b'Not found\n')
                     return
-                content = surge_config(cfg) if client == 'surge' else v2ray_subscription(cfg)
+                content = {'surge': surge_config, 'v2ray': v2ray_subscription, 'clash': clash_config}[client](cfg)
                 traffic = traffic_snapshot(traffic_credentials, traffic_cache) if traffic_credentials and traffic_cache else cfg.get('traffic', {})
-                self.reply(200, content.encode(), traffic)
+                self.reply(200, content.encode(), traffic, clash=client == 'clash')
             except (OSError, ValueError, KeyError, TypeError):
                 self.reply(503, b'Subscription temporarily unavailable\n')
 
         def do_HEAD(self):
             self.reply(405, b'')
 
-        def reply(self, code, content, traffic=None):
+        def reply(self, code, content, traffic=None, *, content_type='text/plain; charset=utf-8', clash=False):
             self.send_response(code)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Type', content_type)
+            if clash:
+                self.send_header('Profile-Update-Interval', '24')
+                self.send_header('Content-Disposition', 'attachment; filename="sui-vps.yaml"')
             self.send_header('Content-Length', str(len(content)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')

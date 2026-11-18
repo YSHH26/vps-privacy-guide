@@ -128,6 +128,40 @@ def upsert(api, obj, wanted, identity):
     return matches[0]
 
 
+RESOLVER_TAG = 'sui-vps-resolver'
+IPV6_REJECT = {'ip_cidr': ['::/0'], 'action': 'reject'}
+
+
+def apply_ipv4_only(base_config):
+    """Proxy egress uses IPv4 only: resolve A records and reject literal IPv6 destinations.
+
+    Only values this tool created are rewritten; an operator's own resolver is kept as-is.
+    """
+    dns = base_config.setdefault('dns', {})
+    if not dns.get('servers'):
+        dns['servers'] = [{'type': 'udp', 'tag': RESOLVER_TAG, 'server': '1.1.1.1'}]
+    route = base_config.setdefault('route', {})
+    resolver = route.get('default_domain_resolver')
+    if resolver is None:
+        resolver = dns['servers'][0]['tag']
+    if isinstance(resolver, str):
+        route['default_domain_resolver'] = {'server': resolver, 'strategy': 'ipv4_only'} if resolver == RESOLVER_TAG else resolver
+    route.setdefault('final', 'sui-vps-direct')
+    rules = route.setdefault('rules', [])
+    if IPV6_REJECT not in rules:
+        rules.insert(0, dict(IPV6_REJECT))
+    return base_config
+
+
+def check_ipv4_only(core_config):
+    route = core_config.get('route', {})
+    resolver = route.get('default_domain_resolver')
+    if not isinstance(resolver, dict) or resolver.get('strategy') != 'ipv4_only':
+        raise PanelError('Generated core does not resolve proxy destinations as IPv4 only')
+    if IPV6_REJECT not in route.get('rules', []):
+        raise PanelError('Generated core does not reject IPv6 destinations')
+
+
 def configure(state_path='/etc/sui-vps/state.json', *, api=None,
               base_url='http://127.0.0.1:2095/app/',
               cert_path='/app/cert/fullchain.pem', key_path='/app/cert/privkey.pem',
@@ -178,12 +212,7 @@ def configure(state_path='/etc/sui-vps/state.json', *, api=None,
     upsert(api, 'outbounds', {'type': 'direct', 'tag': 'sui-vps-direct'}, 'tag')
     base_config = api.call('config')['config']
     original_config = json.dumps(base_config, sort_keys=True)
-    dns = base_config.setdefault('dns', {})
-    if not dns.get('servers'):
-        dns['servers'] = [{'type': 'udp', 'tag': 'sui-vps-resolver', 'server': '1.1.1.1'}]
-    route = base_config.setdefault('route', {})
-    route.setdefault('default_domain_resolver', dns['servers'][0]['tag'])
-    route.setdefault('final', 'sui-vps-direct')
+    apply_ipv4_only(base_config)
     if json.dumps(base_config, sort_keys=True) != original_config:
         api.call('save', {'object': 'config', 'action': 'edit', 'data': json.dumps(base_config)})
     tls_objects = [
@@ -222,6 +251,7 @@ def configure(state_path='/etc/sui-vps/state.json', *, api=None,
                             'inbounds': [x['id'] for x in inbounds], 'volume': 0, 'expiry': 0}, 'name')
     # Export only facts read through the panel's generated core configuration.
     core_config = api.call('singbox-config', raw=True)
+    check_ipv4_only(core_config)
     actual = {x['tag']: x for x in core_config.get('inbounds', [])}
     nodes = []
     for (kind, tag, port, tls_id), node_type in zip(specs, ('vless-reality', 'vless-tls', 'anytls')):

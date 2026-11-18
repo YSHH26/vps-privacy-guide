@@ -48,6 +48,7 @@ def render_html(config, qr_renderer=offline_qr):
     urls = subscription.subscription_urls(config)
     # Validate all outputs before creating a sheet that would advertise broken nodes.
     subscription.surge_config(config)
+    subscription.clash_config(config)
     links = subscription.vless_links(config)
     count = 0
 
@@ -77,7 +78,8 @@ def render_html(config, qr_renderer=offline_qr):
     for label, key in [('SSH 名称', 'ssh_alias'), ('主机', 'host'), ('服务器时区', 'timezone'), ('部署时间', 'deployed_at'), ('组件版本', 'versions')]:
         parts.append(field(label, server.get(key, '未记录'), secret=False))
     parts.append('</section><section><h2>订阅与导入</h2><p>订阅通过你的服务器 HTTPS 更新，不经过第三方转换。二维码包含秘密地址，只有点击后才显示。把订阅交给别人就等于把节点交给别人。</p>')
-    clients = [('Surge', 'surge', 'AnyTLS；官方格式最低为 Mac 6.4.3 / iOS 5.17.0，当前设备能否连接以本页实测记录为准。复制地址，在 Surge 的配置列表中从 URL 下载配置；需要时在配置详情更新。此配置将 FINAL 流量送到代理，没有国内直连或 AI 分流规则。'),
+    clients = [('Clash Verge Rev / OpenClash', 'clash', 'Reality、VLESS TLS、AnyTLS 三个节点，带分流规则：国内网站直连，AI 服务单独一组，其他走代理；AUTO 组在主节点不通时换下一个。复制地址，在 Clash Verge Rev 的「订阅」里粘贴并导入，模式选「规则」，再打开「虚拟网卡模式」（TUN）；只开系统代理时 WebRTC 会暴露本地 IP。OpenClash 在「配置订阅」添加同一地址，关闭在线订阅转换。规则文件从你自己的服务器下载。需要 Mihomo 内核支持 AnyTLS（较新的 Clash Verge Rev 自带）。真客户端结果见下方。'),
+               ('Surge', 'surge', 'AnyTLS；官方格式最低为 Mac 6.4.3 / iOS 5.17.0，当前设备能否连接以本页实测记录为准。复制地址，在 Surge 的配置列表中从 URL 下载配置；需要时在配置详情更新。此配置将 FINAL 流量送到代理，没有国内直连或 AI 分流规则。'),
                ('v2rayN', 'v2ray', 'VLESS Reality 与 VLESS TLS。复制地址，在订阅分组设置中添加分组和 URL，再更新订阅。分别选择两个节点测试。实际应用和内核版本未记录时，按未测试处理。'),
                ('v2rayNG', 'v2ray', 'VLESS Reality 与 VLESS TLS。复制地址，在订阅分组设置中添加 URL，再更新订阅；也可扫描单节点二维码。安卓真机结果见下方。')]
     for name, key, instructions in clients:
@@ -98,8 +100,11 @@ def render_html(config, qr_renderer=offline_qr):
     parts.append('</section><section><h2>CLIProxyAPI 与管理中心</h2><p>管理中心初始没有上游账号。你可以在登录后添加自己的账号或供应商 Key。管理 Key 和 API 调用 Key 用途不同。</p>')
     for label, key in [('管理中心地址', 'management_url'), ('管理 Key', 'management_key'), ('API Base URL', 'api_base_url'), ('调用 Key', 'api_key')]:
         parts.append(field(label, cli.get(key)))
-    parts.append('</section><section><h2>搬瓦工官方流量</h2><p>来源为 KiwiVM getServiceInfo，表示整台 VPS 的共享用量，并非某一个节点的用量。服务缓存至少 10 分钟；缓存过期且查询失败时标记 stale，未知时不填固定额度。客户端是否显示统计取决于应用，需实测。</p><table>')
-    traffic = config.get('traffic') or {'source': 'KiwiVM getServiceInfo', 'status': '未查询'}
+    traffic = config.get('traffic') or {'source': '未配置', 'status': '未查询'}
+    if traffic.get('source') == 'local-interface':
+        parts.append('</section><section><h2>流量（本机网卡统计）</h2><p>没有配置搬瓦工 API 时，按服务器默认出口网卡的收发字节累计，计费方式和每月重置日来自目标文件。它和服务商的计费可能有出入，可以用 traffic-calibrate 按后台已用量校准。表示整台 VPS 的用量，并非某一个节点。客户端是否显示统计取决于应用，需实测。</p><table>')
+    else:
+        parts.append('</section><section><h2>搬瓦工官方流量</h2><p>来源为 KiwiVM getServiceInfo，表示整台 VPS 的共享用量，并非某一个节点的用量。服务缓存至少 10 分钟；缓存过期且查询失败时标记 stale，未知时不填固定额度。客户端是否显示统计取决于应用，需实测。</p><table>')
     for key, value in traffic.items():
         parts.append('<tr><th>' + esc(key) + '</th><td>' + esc(value) + '</td></tr>')
     parts.append('</table></section><section><h2>这一轮实际检查</h2><p>下表只记录真实完成的层级；服务健康不能替代客户端与防泄露检查。</p><table><tr><th>检查</th><th>结果</th></tr>')

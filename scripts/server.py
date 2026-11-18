@@ -106,6 +106,25 @@ def check_firewall_activation(tcp,udp,*,active,ssh_ports):
             if not local and int(port) not in allowed:
                 raise RuntimeError('UFW 尚未启用且检测到其他公网服务；先保留其访问规则再部署，不自动改变防火墙状态')
 
+APT_LOCKS=('/var/lib/dpkg/lock-frontend','/var/lib/dpkg/lock','/var/lib/apt/lists/lock','/var/cache/apt/archives/lock')
+
+def wait_for_apt(timeout=900, locks=APT_LOCKS, sleep=time.sleep):
+    """Fresh provider images may run first-boot apt jobs; wait instead of failing on their locks."""
+    deadline=time.monotonic()+timeout
+    while True:
+        busy=False
+        for path in locks:
+            if not os.path.exists(path):continue
+            with open(path,'a') as handle:
+                try:fcntl.lockf(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except OSError:busy=True;break
+                fcntl.lockf(handle,fcntl.LOCK_UN)
+        if not busy:return
+        if time.monotonic()>=deadline:raise RuntimeError('系统软件包管理器长时间被其他任务占用；稍后重跑 base')
+        sleep(5)
+
+APT=['apt-get','-o','DPkg::Lock::Timeout=600']
+
 def base():
     s=state();target_check(s)
     sshports=[int(line.split()[1]) for line in run(['/usr/sbin/sshd','-T']).stdout.decode().splitlines() if line.startswith('port ')]
@@ -122,8 +141,9 @@ def base():
             if 'nginx' in listeners:conflicts=set()
         if conflicts:raise RuntimeError('部署端口已有服务；不覆盖，请先检查')
     s['base_started']=True;record(s)
-    run(['apt-get','update'])
-    run(['apt-get','install','-y','ca-certificates','curl','nginx','python3-venv','openssl','ufw','docker.io','docker-compose-v2'],env={**os.environ,'DEBIAN_FRONTEND':'noninteractive'})
+    wait_for_apt()
+    run(APT+['update'])
+    run(APT+['install','-y','ca-certificates','curl','nginx','python3-venv','openssl','ufw','docker.io','docker-compose-v2'],env={**os.environ,'DEBIAN_FRONTEND':'noninteractive'})
     systemctl('enable','--now','docker','nginx')
     # Validate timezone through timedatectl rather than interpolating into config.
     run(['timedatectl','set-timezone',s.get('timezone','Etc/UTC')]);run(['timedatectl','set-ntp','true'])
@@ -341,19 +361,76 @@ def share_export():
         if p.exists():run(['chown','root:root',str(p)]);p.chmod(0o600)
 
 def rotate_subscriptions(client='all'):
-    import secrets
-    if client not in ['all','surge','v2ray']:raise RuntimeError('请选择 surge、v2ray 或 all')
+    import secrets, subscription
+    if client not in ['all',*subscription.CLIENTS]:raise RuntimeError('请选择 surge、v2ray、clash 或 all')
     export=load(ETC/'export.json')
-    clients=['surge','v2ray'] if client=='all' else [client]
+    clients=list(subscription.CLIENTS) if client=='all' else [client]
     for name in clients:export['subscriptions'][name]=secrets.token_urlsafe(32)
     save(ETC/'export.json',export);share_export()
     print('订阅令牌已轮换；请重新导出本机账号页并更新相应客户端。')
 
-def traffic():
+def interface_counters():
+    routes=json.loads(run(['ip','-j','route','show','default']).stdout or b'[]')
+    devices={r.get('dev') for r in routes if r.get('dev')}
+    if len(devices)!=1:raise RuntimeError('无法确定唯一的默认出口网卡')
+    device=devices.pop()
+    if not device.replace('-','').replace('.','').replace('_','').isalnum():raise RuntimeError('网卡名称异常')
+    base=pathlib.Path('/sys/class/net')/device/'statistics'
+    return int((base/'rx_bytes').read_text()),int((base/'tx_bytes').read_text())
+
+def current_traffic(calibrate_gb=None):
     import subscription
+    if (ETC/'kiwivm.json').exists():
+        if calibrate_gb is not None:raise RuntimeError('已使用搬瓦工官方读数，不需要校准本机统计')
+        return subscription.traffic_snapshot(ETC/'kiwivm.json',ETC/'traffic.json')
+    target=load(ETC/'target.json')
+    return subscription.local_traffic_snapshot(ETC/'traffic-local.json',interface_counters(),target,calibrate_gb=calibrate_gb)
+
+def traffic(calibrate_gb=None):
     export=load(ETC/'export.json')
-    export['traffic']=subscription.traffic_snapshot(ETC/'kiwivm.json',ETC/'traffic.json')
+    export['traffic']=current_traffic(calibrate_gb)
     save(ETC/'export.json',export);share_export()
+
+def traffic_calibrate():
+    if len(sys.argv)!=3:raise RuntimeError('用法：traffic-calibrate 本月已用GB')
+    try:value=float(sys.argv[2])
+    except ValueError:raise RuntimeError('已用量必须是数字') from None
+    traffic(value)
+    print('本机流量统计已按 '+str(value)+' GB 校准。')
+
+RULES=pathlib.Path('/var/lib/sui-vps/rules')
+
+def fetch_rule_file(url, limit=64*1024*1024):
+    import urllib.request
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(urllib.request.Request(url,headers={'User-Agent':'sui-vps-rules/1'}),timeout=60) as r:
+        data=r.read(limit+1)
+    if len(data)>limit:raise RuntimeError('规则文件过大')
+    return data
+
+def rules(fetch=fetch_rule_file, directory=RULES):
+    """Mirror public rule data; keep the previous copy whenever download or checksum fails."""
+    source=load(ROOT/'versions.json')['rule_data']
+    base=source['base_url']
+    if not base.startswith('https://github.com/MetaCubeX/meta-rules-dat/releases/download/') or not base.endswith('/'):
+        raise RuntimeError('规则数据来源不符')
+    directory=pathlib.Path(directory)
+    directory.mkdir(parents=True,exist_ok=True,mode=0o755);directory.chmod(0o755)
+    updated=[]
+    for name in source['files']:
+        if name not in ('geosite.dat','geoip.metadb'):raise RuntimeError('未知规则文件')
+        data=fetch(base+name)
+        digest=fetch(base+name+'.sha256sum',limit=4096).decode().split()
+        if not data or not digest or digest[0].lower()!=hashlib.sha256(data).hexdigest():
+            raise RuntimeError('规则文件校验失败：'+name+'；保留上一份')
+        fd,tmp=tempfile.mkstemp(dir=directory)
+        try:
+            with os.fdopen(fd,'wb') as f:f.write(data)
+            os.chmod(tmp,0o644);os.replace(tmp,directory/name)
+        finally:
+            if os.path.exists(tmp):os.unlink(tmp)
+        updated.append(name)
+    save(ETC/'rules.json',{'updated_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'files':updated,'source':base})
 
 def services():
     import cliproxy, subscription
@@ -361,10 +438,12 @@ def services():
     # Installer may generate new credentials; persist before returning control.
     record(s)
     export=load(ETC/'export.json');export['cli_proxy']=extra
-    export.setdefault('subscriptions',{'surge':subscription.new_token(),'v2ray':subscription.new_token()})
+    tokens=export.setdefault('subscriptions',{})
+    for client in subscription.CLIENTS:tokens.setdefault(client,subscription.new_token())
     export.setdefault('verification',{})
     export['verification'].update({key:'未测试' for key in ['network','clients','leaks','lifecycle','clean_os'] if key not in export['verification']})
-    export['traffic']=subscription.traffic_snapshot(ETC/'kiwivm.json',ETC/'traffic.json')
+    try:export['traffic']=current_traffic()
+    except (RuntimeError,OSError,ValueError):export['traffic']={'source':'local-interface','status':'unavailable'}
     save(ETC/'export.json',export)
     # Dedicated identity sees only node facts and quota snapshot, never administration/provider secrets.
     run(['id','sui-sub'],check=False)
@@ -443,6 +522,12 @@ def maint():
     unit('sui-vps-backup.service',f'[Unit]\nDescription=Private daily state backup\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 {ROOT}/scripts/server.py backup\n')
     unit('sui-vps-backup.timer','[Unit]\nDescription=Daily backup\n[Timer]\nOnCalendar=daily\nPersistent=true\n[Install]\nWantedBy=timers.target\n')
     systemctl('daemon-reload');systemctl('enable','--now','sui-vps-backup.timer')
+    unit('sui-vps-rules.service',f'[Unit]\nDescription=Mirror Clash rule data; keeps previous copy on failure\nAfter=network-online.target\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 {ROOT}/scripts/server.py rules\n')
+    unit('sui-vps-rules.timer','[Unit]\nDescription=Refresh Clash rule data daily\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=1h\nPersistent=true\n[Install]\nWantedBy=timers.target\n')
+    systemctl('daemon-reload');systemctl('enable','sui-vps-rules.timer');systemctl('start','sui-vps-rules.timer')
+    # First mirror now; a failed download is reported by verify instead of blocking deployment.
+    try:rules()
+    except Exception as e:print('规则镜像暂未完成：'+(str(e) if isinstance(e,RuntimeError) else type(e).__name__),flush=True)
 
 def verify():
     import ssl, socket, urllib.request, urllib.error
@@ -466,7 +551,7 @@ def verify():
     check('fixed_image_and_core_runtime',fixed_runtime)
     check('certificate_pair',lambda:cert_validate(ROOT/'deploy/state/cert'))
     check('nginx',lambda:run(['nginx','-t']))
-    for service in ['sui-vps-sub','sui-cliproxy','sui-vps-renew.timer','sui-vps-backup.timer']:
+    for service in ['sui-vps-sub','sui-cliproxy','sui-vps-renew.timer','sui-vps-backup.timer','sui-vps-rules.timer']:
         check(service,lambda service=service:systemctl('is-active',service))
     def api_check():
         api=manager.PanelAPI()
@@ -494,12 +579,26 @@ def verify():
         urls=subscription.subscription_urls(export)
         for kind,url in urls.items():
             code,body=https_get(url);must(code==200 and bool(body))
-            expected=subscription.surge_config(export) if kind=='surge' else subscription.v2ray_subscription(export)
+            expected={'surge':subscription.surge_config,'v2ray':subscription.v2ray_subscription,'clash':subscription.clash_config}[kind](export)
             must(body.decode()==expected)
-        try:https_get(export['public_base_url']+'/s/'+'A'*43+'/surge.conf')
-        except urllib.error.HTTPError as e:must(e.code==404)
-        else:raise RuntimeError('错误令牌返回配置')
+        for name in subscription.FILENAMES.values():
+            try:https_get(export['public_base_url']+'/s/'+'A'*43+'/'+name)
+            except urllib.error.HTTPError as e:must(e.code==404)
+            else:raise RuntimeError('错误令牌返回配置')
     check('authenticated_https_subscriptions',subscriptions_check)
+    def rules_check():
+        base=subscription.subscription_urls(export)['clash'].rsplit('/',1)[0]+'/geo/'
+        for name in subscription.GEO_FILES:
+            local=(RULES/name).read_bytes();must(len(local)>1024)
+            code,body=https_get(base+name);must(code==200 and body==local)
+            try:https_get(export['public_base_url']+'/s/'+'A'*43+'/geo/'+name)
+            except urllib.error.HTTPError as e:must(e.code==404)
+            else:raise RuntimeError('错误令牌返回规则文件')
+    check('rules_mirror',rules_check)
+    def ipv4_egress():
+        actual=manager.PanelAPI();actual.call('login',{'user':s['panel']['username'],'pass':s['panel']['password']})
+        manager.check_ipv4_only(actual.call('singbox-config',raw=True))
+    check('ipv4_only_egress_config',ipv4_egress)
     check('public_panel',lambda:must(https_get(export['panel']['url'])[0]==200))
     def cert_loaded():
         context=ssl.create_default_context()
@@ -524,7 +623,7 @@ def verify():
 def main():
     if os.geteuid()!=0:raise RuntimeError('请由 root 运行服务器阶段')
     phase=sys.argv[1]
-    if phase not in ['deploy','base','cert','cert-sync','cert-dry-run','restore-check','restore','rotate-subscriptions','panel','services','maint','backup','traffic','verify']:raise RuntimeError('未知阶段')
+    if phase not in ['deploy','base','cert','cert-sync','cert-dry-run','restore-check','restore','rotate-subscriptions','panel','services','maint','backup','traffic','traffic-calibrate','rules','verify']:raise RuntimeError('未知阶段')
     # Serialize phases, renew hooks and backups to prevent partial competing updates.
     with open('/run/sui-vps.lock','w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)

@@ -8,6 +8,8 @@ ROOT=Path(__file__).resolve().parents[1]
 class ServerTest(unittest.TestCase):
     def module(self):
         self.assertTrue((ROOT/'scripts/server.py').exists(), 'server stage runner missing')
+        import sys
+        if str(ROOT/'scripts') not in sys.path:sys.path.insert(0,str(ROOT/'scripts'))  # As when run as a script.
         spec=importlib.util.spec_from_file_location('server',ROOT/'scripts/server.py')
         m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
     def test_preexisting_unowned_state_refused(self):
@@ -88,6 +90,53 @@ class ServerTest(unittest.TestCase):
             self.assertNotEqual(result['surge'],'a'*43)
             self.assertEqual(result['v2ray'],'b'*43)
             with self.assertRaises(RuntimeError):m.rotate_subscriptions('unknown')
+    def test_clash_token_rotates_independently(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);m.save(p/'export.json',{'subscriptions':{'surge':'a'*43,'v2ray':'b'*43,'clash':'c'*43}})
+            with patch.object(m,'ETC',p),patch.object(m,'share_export'):
+                m.rotate_subscriptions('clash')
+            result=m.load(p/'export.json')['subscriptions']
+            self.assertNotEqual(result['clash'],'c'*43)
+            self.assertEqual((result['surge'],result['v2ray']),('a'*43,'b'*43))
+    def test_rule_mirror_checks_digest_and_keeps_previous_copy(self):
+        import hashlib
+        m=self.module()
+        good={'geosite.dat':b'site'*400,'geoip.metadb':b'ip'*900}
+        def fetch(files):
+            def inner(url,limit=0):
+                name=url.rsplit('/',1)[1]
+                if name.endswith('.sha256sum'):
+                    base=name[:-len('.sha256sum')]
+                    return (hashlib.sha256(good[base]).hexdigest()+'  '+base+'\n').encode()
+                return files[name]
+            return inner
+        with tempfile.TemporaryDirectory() as d:
+            etc=Path(d)/'etc';etc.mkdir();rules=Path(d)/'rules'
+            with patch.object(m,'ETC',etc):
+                m.rules(fetch=fetch(good),directory=rules)
+                self.assertEqual(good['geosite.dat'],(rules/'geosite.dat').read_bytes())
+                with self.assertRaisesRegex(RuntimeError,'校验失败'):
+                    m.rules(fetch=fetch({**good,'geosite.dat':b'tampered'}),directory=rules)
+                self.assertEqual(good['geosite.dat'],(rules/'geosite.dat').read_bytes())
+                def broken(url,limit=0):raise OSError('offline')
+                with self.assertRaises(OSError):m.rules(fetch=broken,directory=rules)
+                self.assertEqual(good['geoip.metadb'],(rules/'geoip.metadb').read_bytes())
+                self.assertEqual(sorted(good),sorted(m.load(etc/'rules.json')['files']))
+    def test_apt_wait_blocks_while_lock_held_then_times_out(self):
+        import fcntl
+        m=self.module()
+        with tempfile.TemporaryDirectory() as d:
+            lock=Path(d)/'lock';lock.touch()
+            m.wait_for_apt(timeout=1,locks=[str(lock),str(Path(d)/'missing')],sleep=lambda s:None)
+            import subprocess,sys
+            holder=subprocess.Popen([sys.executable,'-c','import fcntl,sys,time;f=open(sys.argv[1],"a");fcntl.lockf(f,fcntl.LOCK_EX);print("held",flush=True);time.sleep(30)',str(lock)],stdout=subprocess.PIPE,text=True)
+            try:
+                self.assertEqual('held',holder.stdout.readline().strip())
+                with self.assertRaisesRegex(RuntimeError,'占用'):
+                    m.wait_for_apt(timeout=0,locks=[str(lock)],sleep=lambda s:None)
+            finally:
+                holder.kill();holder.wait()
     def test_tls_loaded_check_compares_actual_peer_certificates(self):
         m=self.module()
         calls=[]

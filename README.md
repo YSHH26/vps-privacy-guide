@@ -2,7 +2,7 @@
 
 你需要一台能 SSH 登录、带独立公网 IPv4 的 VPS，一台自己的电脑，以及要使用的客户端。教程按 Ubuntu 24.04 写；没有域名也可以申请可信的 IP 证书。
 
-把这个仓库交给 AI，让它从你自己的电脑运行部署入口。S-UI 管理 **VLESS + Reality、VLESS + TLS、AnyTLS** 三种连接方式；Surge 默认用 AnyTLS，v2rayN / v2rayNG 用 VLESS。完成后，你会拿到公网 HTTPS 面板、按客户端区分的在线订阅，以及只保存在本机的账号 HTML。CLIProxyAPI 和管理中心也保留，初始没有上游账号，需要你之后添加。
+把这个仓库交给 AI，让它从你自己的电脑运行部署入口。S-UI 管理 **VLESS + Reality、VLESS + TLS、AnyTLS** 三种连接方式；电脑和软路由用 Clash Verge Rev / OpenClash（三个节点，带国内直连和 AI 分流），Surge 用 AnyTLS，v2rayN / v2rayNG 用 VLESS。完成后，你会拿到公网 HTTPS 面板、按客户端区分的在线订阅，以及只保存在本机的账号 HTML。CLIProxyAPI 和管理中心也保留，初始没有上游账号，需要你之后添加。
 
 > 已在一台 Ubuntu 24.04 VPS 上重装两轮，并实测三个节点。Surge Mac 6.5.0 的 AnyTLS 连通与出口通过，v2rayN、v2rayNG 和整机防泄露仍待测试。[查看验证记录](docs/verification.md)
 
@@ -54,7 +54,7 @@ python3 scripts/vps.py --state private/target.json export
 
 打开本机交付 HTML，找到面板地址、账号、各客户端订阅、CLIProxyAPI 管理入口和调用信息。页面包含明文秘密，遮挡只防旁观；不要上传或转发。二维码在本机生成，页面不向第三方请求二维码。
 
-按 [客户端说明](docs/clients.md) 导入后，每个节点单独连接，再做 [IP 防泄露检查](docs/leak-protection.md)。系统代理、TUN、DNS、IPv6、WebRTC 和断线保护要分别检查。运营商能知道你连接 VPS，登录过的网站也能认出你的账号；这不是完全匿名。
+按 [客户端说明](docs/clients.md) 导入后，每个节点单独连接，再做 [IP 防泄露检查](docs/leak-protection.md)。WebRTC 显示了本地 IP，看 [WebRTC 泄露怎么修](docs/webrtc.md)；要出差的话，出发前按 [出门前再检查一遍](docs/clients.md#出门前再检查一遍) 在手机和电脑上都测好。系统代理、TUN、DNS、IPv6、WebRTC 和断线保护要分别检查。运营商能知道你连接 VPS，登录过的网站也能认出你的账号；这不是完全匿名。
 
 日常查看、备份、证书续期和更新见 [维护说明](docs/maintenance.md)。首次测试流程见 [从零部署检查](docs/pilot.md)。需要自己选择裸核心模式时，另看 [不使用面板](docs/standalone.md)。
 

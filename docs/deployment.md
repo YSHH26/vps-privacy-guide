@@ -30,7 +30,11 @@ python3 scripts/vps.py --help
 }
 ```
 
-这里的地址是文档保留地址，必须替换。SSH 别名需指向相同 IP，并使用 root；非 root 环境要先安排适当的管理权限，脚本会拒绝不符的目标。目标文件保存 SSH 别名、预期 IP、证书身份等本次部署资料；提供商凭据也只保存在受限私有文件中。使用本地编辑器填写，别把含秘密的内容打印到聊天或共享日志。具体字段以脚本帮助及状态文件校验提示为准。
+这里的地址是文档保留地址，必须替换。
+
+不是搬瓦工、或者不想给 API Key 时，客户端里显示的流量按服务器网卡的收发字节统计。可以在目标文件里加三个可选字段：`traffic_quota_gb` 是每月额度（单位 GiB，即 1024³ 字节，默认 1000），`traffic_reset_day` 是每月重置日（1–28，默认 1，按服务器时区零点切换），`traffic_count` 是服务商的计费方式（`both` 双向相加、`out` 只算出站、`in` 只算入站、`max` 取较大的一边，默认 `both`）。配置了搬瓦工 `provider_file` 时改用官方读数，这三个字段不生效。
+
+SSH 别名需指向相同 IP，并使用 root；非 root 环境要先安排适当的管理权限，脚本会拒绝不符的目标。目标文件保存 SSH 别名、预期 IP、证书身份等本次部署资料；提供商凭据也只保存在受限私有文件中。使用本地编辑器填写，别把含秘密的内容打印到聊天或共享日志。具体字段以脚本帮助及状态文件校验提示为准。
 
 首次用密码接入时，在目标文件配置经可信渠道核验的 `known_hosts_file`，再运行下面命令；密码文件与目标文件都放在权限 700 的目录中，权限为 600。成功确认独立新密钥连接后，密码文件才会删除，现有 SSH 别名不会修改：
 
@@ -68,6 +72,8 @@ python3 scripts/vps.py --state private/target.json preflight
 python3 scripts/vps.py --state private/target.json deploy
 ```
 
+刚重装好的系统，服务商的首次启动脚本可能还在后台运行 `apt-get`（搬瓦工的镜像会装 qemu guest agent 等组件），占着软件包锁。`base` 阶段会先等它结束，最多等 15 分钟，超时就停下，让你稍后重跑，不会强行打断它。
+
 部署阶段应使用 [固定版本清单](../versions.json)，生成独立管理员、节点与订阅凭据，并保存到受限状态目录。失败会停止；先修正原因，再重跑同一阶段，不能靠手工跳过检查。重启 S-UI 或更新证书会中断现有代理连接。已有部署的源文件摘要变化时，会先用服务器上已安装的旧脚本备份旧配置、版本和数据库，再上传新代码；备份短暂停机，也会中断连接。备份失败就停止，不能继续覆盖。
 
 S-UI 是用户、TLS 和入站配置的唯一来源。不要直接写数据库；不要把 [服务端模板](../examples/server.json) 当作面板导入文件。示例只用来解释原生配置和执行固定核心检查。面板对象之间还有用户、TLS、发布地址和客户端模板关联。
@@ -88,7 +94,7 @@ python3 scripts/vps.py --state private/target.json network
 python3 scripts/vps.py --state private/target.json export
 ```
 
-`network` 默认在你自己的电脑上用 Docker 中的固定核心逐条连接三个节点，检查 HTTPS、出口 IP、错误凭据拒绝和恢复后的连接。它需要本机 Docker，可向外部 HTTPS 测试站点发请求；它不测试真实客户端、UDP 或防泄露。结果保存在 `private/network.json`。`export` 重新下载当前节点后，只合并与节点认证、服务器部署和版本指纹相符的本机网络报告；节点或部署变更后，旧报告不会继续显示通过。
+`network` 默认在你自己的电脑上用 Docker 中的固定核心逐条连接三个节点，检查 HTTPS、出口 IP、错误凭据拒绝和恢复后的连接。它还会经每个节点访问一个只有 IPv6 地址的站点和一个 IPv6 字面地址，两个都必须连不上，用来确认服务器的代理出站只走 IPv4。它需要本机 Docker，可向外部 HTTPS 测试站点发请求；它不测试真实客户端、UDP 或防泄露。结果保存在 `private/network.json`。`export` 重新下载当前节点后，只合并与节点认证、服务器部署和版本指纹相符的本机网络报告；节点或部署变更后，旧报告不会继续显示通过。
 
 如果本机 Docker 不可用，而你已将 [版本清单](../versions.json) 中匹配本机平台的官方核心单独下载到私有目录并核对了压缩包和二进制的 SHA256，可显式选择原生核心：
 
@@ -114,9 +120,11 @@ python3 scripts/vps.py --state private/target.json cert-dry-run
 python3 scripts/vps.py --state private/target.json cert-sync
 python3 scripts/vps.py --state private/target.json restore-check
 python3 scripts/vps.py --state private/target.json rotate-subscriptions --client all
+python3 scripts/vps.py --state private/target.json rules
+python3 scripts/vps.py --state private/target.json traffic-calibrate --used-gb 123.4
 ```
 
-备份会短暂停机；证书同步可能重启服务。`cert-dry-run` 检查续期签发，不能代替正式证书同步与服务加载检查。`restore-check` 只在隔离位置检查备份恢复，不覆盖现网。令牌轮换可选 `surge`、`v2ray` 或 `all`，完成后需要各客户端更新订阅，再运行 `export` 获取新地址。具体限制见 [维护说明](maintenance.md)。
+备份会短暂停机；证书同步可能重启服务。`cert-dry-run` 检查续期签发，不能代替正式证书同步与服务加载检查。`restore-check` 只在隔离位置检查备份恢复，不覆盖现网。令牌轮换可选 `surge`、`v2ray`、`clash` 或 `all`，完成后需要各客户端更新订阅，再运行 `export` 获取新地址。`rules` 立即刷新一次 Clash 规则数据（平时每天自动刷新，失败时保留上一份）。`traffic-calibrate` 把本机流量统计的本周期已用量设成服务商后台显示的值（单位 GiB），之后接着累加；用了搬瓦工官方读数时会拒绝执行。具体限制见 [维护说明](maintenance.md)。
 
 需要把已有备份恢复到现网时，先执行 `restore-check`，确认选定备份、目标和旧版本相符，再在已安装支持恢复阶段的服务器上运行：
 

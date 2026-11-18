@@ -67,7 +67,7 @@ class FakeAPI:
                 item['tls'] = copy.deepcopy(tls[x['tls_id']]['server'])
                 item['users'] = [copy.deepcopy(c['config'][x['type']]) for c in self.objects['clients'] if x['id'] in c['inbounds']]
                 result.append(item)
-            return {'inbounds': result}
+            return {'inbounds': result, 'route': copy.deepcopy(self.config.get('route', {}))}
         if action.startswith('clients?id='):
             return {'clients': copy.deepcopy([x for x in self.objects['clients'] if x['id'] == int(action.split('=')[1])])}
         if action.startswith('inbounds?id='):
@@ -103,6 +103,35 @@ class PanelTests(unittest.TestCase):
             self.assertEqual('https://192.0.2.10:9443/app/', exported['panel']['url'])
             for node in exported['nodes']:
                 self.assertNotIn('insecure', node)
+
+    def test_ipv4_only_egress_is_idempotent_and_keeps_operator_resolver(self):
+        fresh = panel.apply_ipv4_only({})
+        self.assertEqual({'server': 'sui-vps-resolver', 'strategy': 'ipv4_only'}, fresh['route']['default_domain_resolver'])
+        self.assertEqual([panel.IPV6_REJECT], fresh['route']['rules'])
+        again = panel.apply_ipv4_only(json.loads(json.dumps(fresh)))
+        self.assertEqual(fresh, again)
+        legacy = panel.apply_ipv4_only({'dns': {'servers': [{'tag': 'sui-vps-resolver'}]},
+                                        'route': {'default_domain_resolver': 'sui-vps-resolver', 'rules': [{'x': 1}]}})
+        self.assertEqual('ipv4_only', legacy['route']['default_domain_resolver']['strategy'])
+        self.assertEqual([panel.IPV6_REJECT, {'x': 1}], legacy['route']['rules'])
+        operator = panel.apply_ipv4_only({'dns': {'servers': [{'tag': 'mine'}]}, 'route': {'default_domain_resolver': 'mine'}})
+        self.assertEqual('mine', operator['route']['default_domain_resolver'])
+        with self.assertRaises(panel.PanelError):
+            panel.check_ipv4_only({'route': operator['route']})
+        panel.check_ipv4_only({'route': fresh['route']})
+
+    def test_refuses_core_without_ipv4_only_readback(self):
+        class NoRoute(FakeAPI):
+            def call(self, action, form=None, raw=False):
+                result = super().call(action, form, raw)
+                if action == 'singbox-config':
+                    result['route'] = {}
+                return result
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'state.json'
+            state.write_text('{"ip":"192.0.2.10"}')
+            with self.assertRaisesRegex(panel.PanelError, 'IPv4'):
+                panel.configure(state, api=NoRoute())
 
     def test_refuses_inconsistent_core_readback(self):
         class BadAPI(FakeAPI):

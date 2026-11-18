@@ -85,6 +85,12 @@ def validate(s):
     s.setdefault('ssh_port',int(pairs.get('port','22')))
     if 'ssh_port' in s and not 1 <= int(s['ssh_port']) <= 65535:
         raise ValueError('Invalid SSH port')
+    if 'traffic_quota_gb' in s and not 0 < float(s['traffic_quota_gb']) <= 1_000_000:
+        raise ValueError('traffic_quota_gb must be a positive number of GiB')
+    if 'traffic_reset_day' in s and not 1 <= int(s['traffic_reset_day']) <= 28:
+        raise ValueError('traffic_reset_day must be 1-28')
+    if s.get('traffic_count', 'both') not in ('both', 'out', 'in', 'max'):
+        raise ValueError('traffic_count must be both, out, in or max')
     return pairs
 
 
@@ -554,7 +560,8 @@ for part in scripts deploy; do test ! -L "/opt/sui-vps/$part"; done
         guard += 'mv -f -- "$staging/'+relative+'" '+shlex.quote('/opt/sui-vps/'+relative)+'\n'
 
     ssh(s, guard, input=payload)
-    config = {k:s[k] for k in ['ip','ssh_alias','timezone','os_template','reinstall_at','ssh_port'] if k in s}
+    config = {k:s[k] for k in ['ip','ssh_alias','timezone','os_template','reinstall_at','ssh_port',
+                               'traffic_quota_gb','traffic_reset_day','traffic_count'] if k in s}
     config['source_sha256'] = digest
     ssh(s, 'umask 077; cat > /etc/sui-vps/target.json', input=json.dumps(config).encode())
     if s.get('provider_file'):
@@ -676,11 +683,12 @@ def remote_stage(s, command, state_path, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True)
-    parser.add_argument('stage', choices=['preflight','deploy','base','cert','panel','services','maint','verify','export','provider-info','provider-proof','reinstall','bootstrap','init','backup','cert-sync','cert-dry-run','restore-check','network','rotate-subscriptions','restore','surge'])
+    parser.add_argument('stage', choices=['preflight','deploy','base','cert','panel','services','maint','verify','export','provider-info','provider-proof','reinstall','bootstrap','init','backup','cert-sync','cert-dry-run','restore-check','network','rotate-subscriptions','restore','surge','rules','traffic-calibrate'])
     parser.add_argument('--network-backend',choices=['docker','native'],help='Network probe backend (default: docker)')
     parser.add_argument('--core-bin',help='Verified private native core; requires network --network-backend native')
     parser.add_argument('--archive')
-    parser.add_argument('--client',choices=['surge','v2ray','all'],default=None)
+    parser.add_argument('--client',choices=['surge','v2ray','clash','all'],default=None)
+    parser.add_argument('--used-gb',type=float,help='traffic-calibrate only: GiB already used this period per the provider panel')
     parser.add_argument('--password-file'); parser.add_argument('--ask-password',action='store_true')
     parser.add_argument('--os-template'); parser.add_argument('--confirm-target'); parser.add_argument('--output')
     parser.add_argument('--discard-existing-data',action='store_true',help='reinstall only: skip the backup requirement because the owner accepts losing all data')
@@ -696,6 +704,8 @@ def main():
         parser.error('Password options apply only to init/bootstrap')
     if args.client and args.stage != 'rotate-subscriptions': parser.error('--client applies only to rotate-subscriptions')
     if args.archive and args.stage != 'restore': parser.error('--archive applies only to restore')
+    if (args.used_gb is not None) != (args.stage == 'traffic-calibrate'): parser.error('traffic-calibrate requires --used-gb, and only it accepts it')
+    if args.used_gb is not None and not 0 <= args.used_gb <= 1_000_000: parser.error('--used-gb must be between 0 and 1000000')
     if args.discard_existing_data and args.stage != 'reinstall': parser.error('--discard-existing-data applies only to reinstall')
     path = secure_path(args.state); s = private_json(path); validate(s)
     global CURRENT_STATE_PATH, CURRENT_STAGE
@@ -735,9 +745,10 @@ def main():
         command=restore_command(s,args.archive,args.confirm_target)
         remote_stage(s,command,path,'restore')
         print('Restore stage completed; run verify and local network/client checks again')
-    elif args.stage in {'backup','cert-sync','cert-dry-run','restore-check','rotate-subscriptions'}:
+    elif args.stage in {'backup','cert-sync','cert-dry-run','restore-check','rotate-subscriptions','rules','traffic-calibrate'}:
         command = 'set -eu; test "$(cat '+OWNER_MARK+')" = sui-vps-v1; python3 /opt/sui-vps/scripts/server.py '+args.stage
         if args.stage == 'rotate-subscriptions': command += ' '+(args.client or 'all')
+        if args.stage == 'traffic-calibrate': command += ' '+repr(float(args.used_gb))
         remote_stage(s,command,path,args.stage)
         print('Maintenance stage completed using the installed deployment source')
     elif args.stage == 'verify':

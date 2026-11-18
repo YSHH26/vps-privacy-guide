@@ -192,10 +192,19 @@ class LocalSession:
             if receive(stream, 2) != b'\x05\x00':
                 return {'ok': False, 'error': 'proxy_unhealthy'}
             stage = 'connect'
-            hostname = target.hostname.encode('idna')
-            if len(hostname) > 255:
-                raise ProbeError('HTTPS hostname exceeds SOCKS5 limit')
-            stream.sendall(b'\x05\x01\x00\x03' + bytes([len(hostname)]) + hostname + struct.pack('!H', target.port or 443))
+            try:
+                literal = ipaddress.ip_address(target.hostname)
+            except ValueError:
+                literal = None
+            if literal is not None:
+                # Literal addresses use SOCKS address types so the server sees an IP destination.
+                kind = b'\x01' if literal.version == 4 else b'\x04'
+                stream.sendall(b'\x05\x01\x00' + kind + literal.packed + struct.pack('!H', target.port or 443))
+            else:
+                hostname = target.hostname.encode('idna')
+                if len(hostname) > 255:
+                    raise ProbeError('HTTPS hostname exceeds SOCKS5 limit')
+                stream.sendall(b'\x05\x01\x00\x03' + bytes([len(hostname)]) + hostname + struct.pack('!H', target.port or 443))
             reply = receive(stream, 4)
             if reply[0] != 5:
                 return {'ok': False, 'error': 'proxy_invalid_reply'}
@@ -411,14 +420,19 @@ class NativeBackend:
                         process.wait()
 
 
+# One AAAA-only hostname and one literal IPv6 address; the server must reach neither.
+IPV6_URLS = ('https://ipv6.icanhazip.com/', 'https://[2606:4700:4700::1111]/')
+
+
 def summarize(result):
     return {key: result[key] for key in ('ok', 'status', 'error') if key in result}
 
 
 def probe(input_path, output_path, *, url='https://example.com/',
           exit_url='https://api.ipify.org/', timeout=20, backend=None,
-          versions_path=None, core_bin=None):
+          versions_path=None, core_bin=None, ipv6_urls=IPV6_URLS):
     targets = {'https': endpoint(url), 'exit': endpoint(exit_url)}
+    targets.update({'ipv6_' + str(i + 1): endpoint(u) for i, u in enumerate(ipv6_urls)})
     if not 1 <= timeout <= 120:
         raise ProbeError('Request timeout must be between 1 and 120 seconds')
     source = private_file(input_path)
@@ -493,6 +507,9 @@ def probe(input_path, output_path, *, url='https://example.com/',
                     row['exit_matches_server'] = observed['ok'] and address == expected_ip
                     if not row['exit_matches_server']:
                         continue
+                    attempts = [summarize(session.request(u)) for u in ipv6_urls]
+                    row['ipv6_requests'] = attempts
+                    row['ipv6_egress'] = 'reachable' if any(a['ok'] for a in attempts) else 'blocked'
                 try:
                     with backend.session(client_config(node, wrong=True)) as session:
                         wrong = session.request(url)
@@ -505,7 +522,7 @@ def probe(input_path, output_path, *, url='https://example.com/',
                 with backend.session(client_config(node)) as session:
                     restored = session.request(url)
                     row['restored_https'] = summarize(restored)
-                if restored['ok'] and row['wrong_credentials'] == 'rejected':
+                if restored['ok'] and row['wrong_credentials'] == 'rejected' and row.get('ipv6_egress') == 'blocked':
                     row['status'] = 'passed'
             except ProbeError as exc:
                 row['error'] = str(exc)
