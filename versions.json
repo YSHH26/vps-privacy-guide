@@ -37,7 +37,8 @@
     "base_url": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/",
     "files": [
       "geosite.dat",
-      "geoip.metadb"
+      "geoip.metadb",
+      "GeoLite2-ASN.mmdb"
     ],
     "note": "Data, not a core: refreshed daily, checked against the same release sha256sum; previous copy kept on failure."
   }

@@ -124,7 +124,7 @@ python3 scripts/vps.py --state private/target.json rules
 python3 scripts/vps.py --state private/target.json traffic-calibrate --used-gb 123.4
 ```
 
-备份会短暂停机；证书同步可能重启服务。`cert-dry-run` 检查续期签发，不能代替正式证书同步与服务加载检查。`restore-check` 只在隔离位置检查备份恢复，不覆盖现网。令牌轮换可选 `surge`、`v2ray`、`clash` 或 `all`，完成后需要各客户端更新订阅，再运行 `export` 获取新地址。`rules` 立即刷新一次 Clash 规则数据（平时每天自动刷新，失败时保留上一份）。`traffic-calibrate` 把本机流量统计的本周期已用量设成服务商后台显示的值（单位 GiB），之后接着累加；用了搬瓦工官方读数时会拒绝执行。具体限制见 [维护说明](maintenance.md)。
+备份会短暂停机；证书同步可能重启服务。`cert-dry-run` 检查续期签发，不能代替正式证书同步与服务加载检查。`restore-check` 只在隔离位置检查备份恢复，不覆盖现网。令牌轮换可选 `surge`、`v2ray`、`clash`、`shadowrocket` 或 `all`，完成后需要各客户端更新订阅，再运行 `export` 获取新地址。`rules` 立即刷新一次 Clash 规则数据（平时每天自动刷新，失败时保留上一份）。`traffic-calibrate` 把本机流量统计的本周期已用量设成服务商后台显示的值（单位 GiB），之后接着累加；用了搬瓦工官方读数时会拒绝执行。具体限制见 [维护说明](maintenance.md)。
 
 需要把已有备份恢复到现网时，先执行 `restore-check`，确认选定备份、目标和旧版本相符，再在已安装支持恢复阶段的服务器上运行：
 

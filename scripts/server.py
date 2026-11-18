@@ -160,9 +160,9 @@ def base():
     s['base_done']=True;record(s)
     if (ETC/'export.json').exists():share_export()
 
-def cert_validate(directory):
+def cert_validate(directory, min_seconds=3600):
     cert=pathlib.Path(directory)/'fullchain.pem';key=pathlib.Path(directory)/'privkey.pem'
-    run(['openssl','x509','-in',str(cert),'-noout','-checkend','3600'])
+    run(['openssl','x509','-in',str(cert),'-noout','-checkend',str(int(min_seconds))])
     public=run(['openssl','x509','-in',str(cert),'-pubkey','-noout']).stdout
     private=run(['openssl','pkey','-in',str(key),'-pubout']).stdout
     if public!=private:raise RuntimeError('证书与私钥不匹配')
@@ -248,8 +248,34 @@ server {{
 }}
 '''
 
+ACME_CARRY=pathlib.Path('/var/lib/sui-vps-acme-carry')
+
+def adopt_carried_acme(s, carry=ACME_CARRY, target=ACME_CONFIG, validate=cert_validate):
+    """Reuse a lineage saved before reinstall when it is for this IP and valid for at least a day."""
+    carry=pathlib.Path(carry);target=pathlib.Path(target)
+    if not carry.is_dir():return False
+    try:
+        if (target/'live/sui-vps/fullchain.pem').exists():return False
+        source=carry/'acme'
+        live=source/'live/sui-vps'
+        for name in ['fullchain.pem','privkey.pem']:
+            resolved=(live/name).resolve()
+            if not resolved.is_file() or source.resolve() not in resolved.parents:raise RuntimeError('携带的证书链接指向目录之外')
+        validate(live,min_seconds=86400)
+        run(['openssl','x509','-in',str(live/'fullchain.pem'),'-noout','-checkip',s['ip']])
+        if not (source/'renewal/sui-vps.conf').is_file():raise RuntimeError('携带的证书缺少续期配置')
+        if target.exists():shutil.rmtree(target)
+        shutil.move(str(source),str(target));target.chmod(0o700)
+        print('复用重装前保存的 IP 证书。',flush=True)
+        return True
+    except Exception as e:
+        print('不复用保存的证书，改为申请新证书：'+(str(e) if isinstance(e,RuntimeError) else type(e).__name__),flush=True)
+        return False
+    finally:
+        shutil.rmtree(carry,ignore_errors=True)
+
 def cert():
-    s=state();web=pathlib.Path('/var/www/sui-vps-acme');web.mkdir(parents=True,exist_ok=True,mode=0o755);web.chmod(0o755)
+    s=state();adopt_carried_acme(s);web=pathlib.Path('/var/www/sui-vps-acme');web.mkdir(parents=True,exist_ok=True,mode=0o755);web.chmod(0o755)
     ACME_CONFIG.mkdir(parents=True,exist_ok=True,mode=0o700);ACME_CONFIG.chmod(0o700)
     acme='/etc/nginx/conf.d/sui-vps-acme.conf'
     nginx_config(acme,f'''server {{ listen 80; server_name {s['ip']}; access_log off; error_log /dev/null;
@@ -362,7 +388,7 @@ def share_export():
 
 def rotate_subscriptions(client='all'):
     import secrets, subscription
-    if client not in ['all',*subscription.CLIENTS]:raise RuntimeError('请选择 surge、v2ray、clash 或 all')
+    if client not in ['all',*subscription.CLIENTS]:raise RuntimeError('请选择 surge、v2ray、clash、shadowrocket 或 all')
     export=load(ETC/'export.json')
     clients=list(subscription.CLIENTS) if client=='all' else [client]
     for name in clients:export['subscriptions'][name]=secrets.token_urlsafe(32)
@@ -418,7 +444,7 @@ def rules(fetch=fetch_rule_file, directory=RULES):
     directory.mkdir(parents=True,exist_ok=True,mode=0o755);directory.chmod(0o755)
     updated=[]
     for name in source['files']:
-        if name not in ('geosite.dat','geoip.metadb'):raise RuntimeError('未知规则文件')
+        if name not in ('geosite.dat','geoip.metadb','GeoLite2-ASN.mmdb'):raise RuntimeError('未知规则文件')
         data=fetch(base+name)
         digest=fetch(base+name+'.sha256sum',limit=4096).decode().split()
         if not data or not digest or digest[0].lower()!=hashlib.sha256(data).hexdigest():
@@ -579,7 +605,7 @@ def verify():
         urls=subscription.subscription_urls(export)
         for kind,url in urls.items():
             code,body=https_get(url);must(code==200 and bool(body))
-            expected={'surge':subscription.surge_config,'v2ray':subscription.v2ray_subscription,'clash':subscription.clash_config}[kind](export)
+            expected=subscription.RENDERERS[kind](export)
             must(body.decode()==expected)
         for name in subscription.FILENAMES.values():
             try:https_get(export['public_base_url']+'/s/'+'A'*43+'/'+name)
@@ -608,6 +634,12 @@ def verify():
         must(loaded==disk)
         check_loaded_certificates(disk,[9444,2443,8443],fetch=tls_peer)
     check('trusted_certificate_loaded',cert_loaded)
+    def reality_fallback():
+        # Unauthenticated TLS on the Reality port must be relayed to this server's own certificate.
+        disk=run(['openssl','x509','-in',str(ROOT/'deploy/state/cert/fullchain.pem'),'-outform','DER']).stdout
+        check_loaded_certificates(disk,[int(s.get('ports',{}).get('reality',443))],fetch=tls_peer)
+    # Deployments created before self fallback keep their external target; nothing to check there.
+    if s.get('reality',{}).get('target')=='self':check('reality_self_fallback',reality_fallback)
     check('cliproxy_authentication',lambda:cliproxy.verify(s))
     report={'checked_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
             'source_sha256':s.get('source_sha256'),'checks':results,

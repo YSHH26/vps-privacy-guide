@@ -102,7 +102,7 @@ class ServerTest(unittest.TestCase):
     def test_rule_mirror_checks_digest_and_keeps_previous_copy(self):
         import hashlib
         m=self.module()
-        good={'geosite.dat':b'site'*400,'geoip.metadb':b'ip'*900}
+        good={'geosite.dat':b'site'*400,'geoip.metadb':b'ip'*900,'GeoLite2-ASN.mmdb':b'asn'*500}
         def fetch(files):
             def inner(url,limit=0):
                 name=url.rsplit('/',1)[1]
@@ -137,6 +137,42 @@ class ServerTest(unittest.TestCase):
                     m.wait_for_apt(timeout=0,locks=[str(lock)],sleep=lambda s:None)
             finally:
                 holder.kill();holder.wait()
+    def test_carried_acme_adopted_only_when_valid_for_this_ip(self):
+        import os
+        m=self.module()
+        def lineage(root, escape=False, renewal=True):
+            acme=root/'carry'/'acme';archive=acme/'archive/sui-vps';live=acme/'live/sui-vps'
+            archive.mkdir(parents=True);live.mkdir(parents=True)
+            for name in ['fullchain1.pem','privkey1.pem']:(archive/name).write_text(name)
+            outside=root/'outside.pem';outside.write_text('x')
+            os.symlink(str(outside) if escape else '../../archive/sui-vps/fullchain1.pem',live/'fullchain.pem')
+            os.symlink('../../archive/sui-vps/privkey1.pem',live/'privkey.pem')
+            if renewal:(acme/'renewal').mkdir();(acme/'renewal/sui-vps.conf').write_text('conf')
+            return root/'carry'
+        calls=[]
+        ok=lambda d,min_seconds=0:calls.append(min_seconds)
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);carry=lineage(root);target=root/'etc/acme'
+            with patch.object(m,'run') as run:
+                self.assertTrue(m.adopt_carried_acme({'ip':'192.0.2.1'},carry=carry,target=target,validate=ok))
+            self.assertIn('-checkip',run.call_args.args[0])
+            self.assertEqual([86400],calls)
+            self.assertEqual('fullchain1.pem',(target/'live/sui-vps/fullchain.pem').read_text())
+            self.assertFalse(carry.exists())
+            carry=lineage(root/'again')
+            self.assertFalse(m.adopt_carried_acme({'ip':'192.0.2.1'},carry=carry,target=target,validate=ok))
+            self.assertFalse(carry.exists())
+        for kwargs in [{'escape':True},{'renewal':False}]:
+            with tempfile.TemporaryDirectory() as d:
+                root=Path(d);carry=lineage(root,**kwargs);target=root/'etc/acme'
+                with patch.object(m,'run'):
+                    self.assertFalse(m.adopt_carried_acme({'ip':'192.0.2.1'},carry=carry,target=target,validate=ok))
+                self.assertFalse(target.exists());self.assertFalse(carry.exists())
+        def expired(d,min_seconds=0):raise RuntimeError('证书即将过期')
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);carry=lineage(root);target=root/'etc/acme'
+            self.assertFalse(m.adopt_carried_acme({'ip':'192.0.2.1'},carry=carry,target=target,validate=expired))
+            self.assertFalse(target.exists())
     def test_tls_loaded_check_compares_actual_peer_certificates(self):
         m=self.module()
         calls=[]

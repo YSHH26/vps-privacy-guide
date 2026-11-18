@@ -106,8 +106,6 @@ class ExamplesTest(unittest.TestCase):
                 '__VLESS_UUID__': '9f740afa-195d-4cb8-b528-9dcd8529f881',
                 '__REALITY_PRIVATE_KEY__': private, '__REALITY_PUBLIC_KEY__': public,
                 '__REALITY_SHORT_ID__': '0123456789abcdef',
-                '__REALITY_SERVER_NAME__': 'example.com',
-                '__REALITY_HANDSHAKE_SERVER__': 'example.com',
                 '__CERTIFICATE_PATH__': '/work/cert.pem', '__KEY_PATH__': '/work/key.pem',
             }
             for name in ['server', 'client']:

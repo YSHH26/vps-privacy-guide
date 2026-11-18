@@ -22,7 +22,7 @@ import delivery
 def fixture():
     return {'server': {'host': '192.0.2.1', 'ssh_alias': 'test-host', 'timezone': 'UTC'},
             'public_base_url': 'https://192.0.2.1:9443',
-            'subscriptions': {'surge': 'A' * 43, 'v2ray': 'B' * 43, 'clash': 'E' * 43},
+            'subscriptions': {'surge': 'A' * 43, 'v2ray': 'B' * 43, 'clash': 'E' * 43, 'shadowrocket': 'F' * 43},
             'nodes': [
                 {'type': 'anytls', 'name': 'AnyTLS', 'server': '192.0.2.1', 'port': 8443,
                  'password': 'test-password', 'server_name': '192.0.2.1'},
@@ -73,8 +73,11 @@ class SubscriptionTests(unittest.TestCase):
         rules = profile['rules']
         self.assertEqual('MATCH,PROXY', rules[-1])
         self.assertLess(rules.index('GEOSITE,category-ai-!cn,AI'), rules.index('GEOSITE,cn,DIRECT'))
+        self.assertLess(rules.index('GEOSITE,google-play@cn,DIRECT'), rules.index('GEOSITE,cn,DIRECT'))
+        self.assertEqual('IP-ASN,132203,DIRECT,no-resolve', rules[-2])
+        self.assertTrue(profile['geox-url']['asn'].endswith('/geo/GeoLite2-ASN.mmdb'))
         for rule in rules:
-            if rule.startswith(('IP-CIDR', 'GEOIP')):
+            if rule.startswith(('IP-CIDR', 'GEOIP', 'IP-ASN')):
                 self.assertTrue(rule.endswith(',no-resolve'), rule)
         self.assertEqual('fake-ip', profile['dns']['enhanced-mode'])
         self.assertIs(profile['dns']['respect-rules'], True)
@@ -124,6 +127,19 @@ class SubscriptionTests(unittest.TestCase):
             else:
                 os.environ['TZ'] = old
             __import__('time').tzset()
+
+    def test_shadowrocket_has_vless_and_anytls_with_verification(self):
+        links = base64.b64decode(subscription.shadowrocket_subscription(fixture())).decode().split()
+        self.assertEqual(['anytls', 'vless', 'vless'], sorted(x.split('://')[0] for x in links))
+        anytls = next(x for x in links if x.startswith('anytls://'))
+        self.assertTrue(anytls.startswith('anytls://test-password@192.0.2.1:8443?'))
+        self.assertIn('insecure=0', anytls)
+        self.assertIn('sni=192.0.2.1', anytls)
+        self.assertNotIn('allowInsecure=1', '\n'.join(links))
+        cfg = fixture()
+        cfg['subscriptions']['shadowrocket'] = cfg['subscriptions']['v2ray']
+        with self.assertRaises(ValueError):
+            subscription.subscription_urls(cfg)
 
     def test_invalid_node_cannot_inject_surge_directive(self):
         cfg = fixture()
@@ -185,8 +201,11 @@ class SubscriptionTests(unittest.TestCase):
                     self.assertEqual('24', response.headers['Profile-Update-Interval'])
                 with urlopen(base + 'E' * 43 + '/geo/geosite.dat') as response:
                     self.assertEqual(b'geosite-bytes', response.read())
+                with urlopen(base + 'F' * 43 + '/shadowrocket.txt') as response:
+                    self.assertIn(b'dmxlc3M6Ly', response.read())
                 for suffix, code in [('A' * 43 + '/geo/geosite.dat', 404), ('E' * 43 + '/geo/other.dat', 404),
-                                     ('A' * 43 + '/clash.yaml', 404), ('E' * 43 + '/geo/geoip.metadb', 503)]:
+                                     ('A' * 43 + '/clash.yaml', 404), ('E' * 43 + '/geo/geoip.metadb', 503),
+                                     ('F' * 43 + '/geo/geosite.dat', 404), ('E' * 43 + '/shadowrocket.txt', 404)]:
                     with self.assertRaises(HTTPError) as error:
                         urlopen(base + suffix)
                     with error.exception as response:
@@ -293,7 +312,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn('<script src=', html)
         self.assertNotIn('<link ', html)
         self.assertNotIn('fetch(', html)
-        self.assertEqual(html.count('data-test="local-qr"'), 6)
+        self.assertEqual(html.count('data-test="local-qr"'), 7)
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / 'private' / 'delivery.html'
             delivery.write_private(target, html)
@@ -332,7 +351,8 @@ class ClashCoreTests(unittest.TestCase):
                     data = response.read()
                 with urlopen(source['base_url'] + name + '.sha256sum', timeout=60) as response:
                     self.assertEqual(response.read().decode().split()[0], hashlib.sha256(data).hexdigest())
-                (directory / name).write_bytes(data)
+                # Mihomo's local file name for the ASN database differs from the published asset.
+                (directory / ('ASN.mmdb' if name == 'GeoLite2-ASN.mmdb' else name)).write_bytes(data)
             (directory / 'config.yaml').write_text(subscription.clash_config(fixture()))
             directory.chmod(0o755)
             result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '-v', f'{directory}:/root/.config/mihomo:ro',

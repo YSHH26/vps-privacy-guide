@@ -104,6 +104,29 @@ class PanelTests(unittest.TestCase):
             for node in exported['nodes']:
                 self.assertNotIn('insecure', node)
 
+    def test_reality_falls_back_to_own_https_and_legacy_target_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'state.json'
+            state.write_text(json.dumps({'ip': '192.0.2.10'}))
+            api = FakeAPI()
+            panel.configure(state, api=api)
+            tls = next(x for x in api.objects['tls'] if x['name'] == 'sui-vps-reality')
+            self.assertNotIn('server_name', tls['server'])
+            self.assertEqual({'server': '192.0.2.10', 'server_port': 9443}, tls['server']['reality']['handshake'])
+            self.assertEqual('192.0.2.10', tls['client']['server_name'])
+            node = json.loads((Path(tmp) / 'export.json').read_text())['nodes'][0]
+            self.assertEqual(('192.0.2.10', 'self'), (node['server_name'], node['reality_target']))
+            self.assertEqual('self', json.loads(state.read_text())['reality']['target'])
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'state.json'
+            state.write_text(json.dumps({'ip': '192.0.2.10', 'reality': {'private_key': 'p' * 43, 'public_key': 'P' * 43,
+                                                                         'short_id': '0123456789abcdef', 'server_name': 'www.example.com'}}))
+            api = FakeAPI()
+            panel.configure(state, api=api)
+            tls = next(x for x in api.objects['tls'] if x['name'] == 'sui-vps-reality')
+            self.assertEqual({'server': 'www.example.com', 'server_port': 443}, tls['server']['reality']['handshake'])
+            self.assertEqual('www.example.com', json.loads((Path(tmp) / 'export.json').read_text())['nodes'][0]['server_name'])
+
     def test_ipv4_only_egress_is_idempotent_and_keeps_operator_resolver(self):
         fresh = panel.apply_ipv4_only({})
         self.assertEqual({'server': 'sui-vps-resolver', 'strategy': 'ipv4_only'}, fresh['route']['default_domain_resolver'])
@@ -221,7 +244,8 @@ class PanelRuntimeTests(unittest.TestCase):
                 '-CA', str(directory/'ca.pem'), '-CAkey', str(directory/'ca.key'),
                 '-CAcreateserial', '-copy_extensions', 'copy', '-out', str(cert/'fullchain.pem'), '-days', '1')
             state = directory/'state.json'
-            panel.secure_json(state, {'ip': '192.0.2.10', 'timezone': 'UTC'})
+            # The fallback HTTPS site lives in the panel container's namespace for this isolated test.
+            panel.secure_json(state, {'ip': '192.0.2.10', 'timezone': 'UTC', 'reality_fallback_host': '127.0.0.1'})
             try:
                 run('docker', 'run', '-d', '--name', name,
                     '-p', '127.0.0.1::2095', '-p', '127.0.0.1::1080', '-v', str(cert)+':/app/cert:ro', image)
@@ -273,6 +297,18 @@ class PanelRuntimeTests(unittest.TestCase):
         image = json.loads((ROOT/'versions.json').read_text())['sing_box_image']
         run('docker', 'pull', image)
         socks_address = run('docker', 'port', server_name, '1080/tcp')
+        # Reality relays every handshake to its target, so a reachable TLS site must exist on 127.0.0.1:9443.
+        panel.secure_json(directory/'fallback.json', {'log': {'level': 'error'}, 'inbounds': [
+            {'type': 'http', 'listen': '127.0.0.1', 'listen_port': 9443,
+             'tls': {'enabled': True, 'certificate_path': '/cert/fullchain.pem', 'key_path': '/cert/privkey.pem'}}],
+            'outbounds': [{'type': 'block'}]})
+        directory.chmod(0o755)
+        for item in [directory/'fallback.json', directory/'ca.pem']:
+            item.chmod(0o644)
+        fallback_name = 'sui-fallback-test-' + uuid.uuid4().hex[:10]
+        run('docker', 'run', '-d', '--name', fallback_name, '--network', 'container:'+server_name,
+            '-v', str(directory)+':/work:ro', '-v', str(directory/'cert')+':/cert:ro', image, 'run', '-c', '/work/fallback.json')
+        self.addCleanup(subprocess.run, ['docker', 'rm', '-f', fallback_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         for node in exported['nodes']:
             outbound = {'type': 'anytls' if node['type'] == 'anytls' else 'vless',
                         'tag': 'selected', 'server': '127.0.0.1', 'server_port': node['port'],

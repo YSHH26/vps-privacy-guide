@@ -18,6 +18,16 @@ IP 证书有效期约 160 小时，因此脚本每六小时检查续期。Certbo
 
 客户端的连接地址与被验证身份都是服务器公网 IP，证书必须在 IP SAN 中包含它。IP 不会像域名一样通过 SNI 发送，不能靠填一个无关域名绕过身份检查。不要设置 `insecure=true` 或 `skip-cert-verify=true`。
 
+## 重装系统时证书怎么处理
+
+Let's Encrypt 对同一个 IP 有签发上限：**任意 7 天内最多 5 张**。如果每次重装都重新申请，一周重装几次就会被拒绝，要等最早那张满 7 天才能再签。
+
+所以 `reinstall` 在发出重装请求之前，会先把服务器上本项目的 ACME 目录（账号、证书、私钥、续期配置）打包，存到你电脑的 `private/acme-carry.tar.gz`，权限 600。加了 `--discard-existing-data` 也一样，放弃的是其他数据，证书照样保存。
+
+重装后部署时，`deploy` 把这份证书传回服务器的临时目录。`cert` 阶段先检查：证书是签给这个 IP 的、和私钥配对、剩余有效期至少一天、续期配置齐全、文件链接都没有指向目录之外。全部满足才直接启用；有一项不满足就删掉它，照常申请新证书。之后的续期和平时一样。
+
+这份文件里有证书私钥，只能留在本机，不要上传或发给别人。它最多几天就会过期，过期后留着也没用，下次重装前会被新的覆盖。
+
 ## 分别检查续期、同步和实际加载
 
 先演练签发。下面从你自己的电脑运行：
@@ -44,9 +54,15 @@ python3 scripts/vps.py --state private/target.json network
 
 ## Reality
 
-自动配置使用 VLESS + Reality + Vision，默认握手目标是 `www.microsoft.com:443`。这需要 VPS 能正常访问该 TLS 站点；其可达性和客户端兼容性仍需逐次网络检查。这里没有使用 Xray 的“回落到自己”配置。
+自动配置使用 VLESS + Reality + Vision，**握手目标是这台服务器自己的 HTTPS**（`你的IP:9443`，也就是 Nginx 上挂着 IP 证书的那个入口）。
 
-S-UI API 生成独立 Reality 密钥对，脚本另生成 short ID 和 VLESS UUID。私钥保留在服务器，只把公钥写入客户端节点。Reality 不使用本项目普通 TLS 证书路径。
+这样做的原因：Reality 收到没有正确密钥的连接时，会把它原样转给握手目标。以前目标是 `www.microsoft.com`，别人直接探测你的 443 端口，会看到一台普通 VPS 声称自己是微软，这本身就很可疑。现在探测者看到的是这台服务器自己的、签给这个 IP 的正常证书，和 9443 上的网站一致。
+
+要注意的一点：客户端连的是 IP，TLS 规范不会把 IP 地址当作 SNI 发送，服务器收到的 SNI 是空的。所以服务端的 Reality 不设 `server_name`（等于只接受空 SNI），客户端的 `server_name` 填服务器 IP。我们用固定的 sing-box 1.14.4 和 Mihomo 1.19.33 当客户端测过这种组合；v2rayN / v2rayNG 用的 Xray 核心还没有测，导入后先单独试一次 Reality 节点。
+
+已经用 `www.microsoft.com` 部署的旧服务器，重跑部署时保留原来的握手目标，不会悄悄改掉客户端配置。想换成回落到自己，需要重新部署一台（本项目的做法是先重装系统）。
+
+S-UI API 生成独立 Reality 密钥对，脚本另生成 short ID 和 VLESS UUID。私钥保留在服务器，只把公钥写入客户端节点。Reality 节点本身不用证书，但回落目标用的是本项目的 IP 证书；证书续期后 Nginx 重新加载，回落看到的也随之更新。`verify` 的 `reality_self_fallback` 会检查：不带凭据连 443 时拿到的证书，必须和磁盘上的当前证书一致。
 
 | 参数 | 服务端 | 客户端 |
 | --- | --- | --- |
@@ -54,8 +70,9 @@ S-UI API 生成独立 Reality 密钥对，脚本另生成 short ID 和 VLESS UUI
 | Flow | xtls-rprx-vision | xtls-rprx-vision |
 | Reality 密钥 | private_key | 配对的 public_key |
 | short ID | short_id 数组 | 数组中一个值 |
-| 握手目标 | 实际 TLS 站点与 443 | 匹配的 server_name |
+| 握手目标 | 服务器 IP 与 9443 | — |
+| server_name | 不设置（接受空 SNI） | 服务器 IP |
 
-示例中的 `__REALITY_HANDSHAKE_SERVER__` 和 `__REALITY_SERVER_NAME__` 仍是占位符，不能直接当作目标使用。修改握手目标后，同步面板配置与订阅，执行固定核心检查和逐节点网络测试。
+示例中的 `__SERVER_IP__` 是占位符，部署时替换成你的公网 IP。修改握手目标后，同步面板配置与订阅，执行固定核心检查和逐节点网络测试。
 
 来源：[sing-box Reality 配置](https://sing-box.sagernet.org/configuration/shared/tls/#reality-fields)。

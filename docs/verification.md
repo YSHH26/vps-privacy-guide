@@ -32,6 +32,23 @@
 | Clash 订阅 | 固定 Mihomo 1.19.33 加载真实订阅：从服务器镜像下载 geosite 与 IP 库，经 AUTO 组 HTTPS 200，出口为 VPS。订阅返回用量与更新间隔头。 |
 | 未测试 | Clash Verge Rev、OpenClash 真客户端；规则分流的实际走向（国内直连、AI 分组）；DNS 与 WebRTC 泄露；本机网卡流量统计（本机已配置 KiwiVM，实机走官方读数，本机统计只有单元测试）；有 IPv6 的服务器上的拒绝效果。 |
 
+## 第四轮：Shadowrocket 订阅、微信 / Play 规则、Reality 回落本机、证书复用（2026-11-18）
+
+同一台获授权的 KVM VPS，前后两次经提供商 API 重装 Ubuntu 24.04 x86_64，都从仓库入口部署，旧数据由所有者明确放弃。
+
+1. 第一次重装后，部署在申请 IP 证书时被 Let's Encrypt 拒绝：同一 IP 一周内只能签 5 张，之前几轮重装已经用完。等额度恢复后在同一系统上重跑通过。
+2. 为了避免以后再撞上这个限制，加了"重装前保存证书、重装后复用"。随后第二次重装实测：`reinstall` 先保存了证书，`deploy` 在 cert 阶段复用了这张证书，没有申请新证书。
+
+| 检查 | 结果 |
+| --- | --- |
+| 仓库 | 本机 142 项测试通过（12 项因未设环境变量跳过）。加 `VALIDATE_CORE` 和 S-UI / 节点 / CLIProxyAPI 集成测试后 142 项通过（7 项跳过）。Compose 解析通过。Reality 回落本机经固定 sing-box 1.14.4 与 Mihomo 1.19.33 客户端认证通过。 |
+| 服务检查 | 两次部署后 `verify` 都是 19 项通过。新增的 `reality_self_fallback` 确认：不带 Reality 凭据直接连 443 时，看到的是服务器自己的 IP 证书。 |
+| 证书复用 | 第二次重装后，部署日志显示"复用重装前保存的 IP 证书"，`certificate_pair` 与 `trusted_certificate_loaded` 通过。 |
+| 三个节点 | 两次部署后，sing-box 1.14.4 单节点测试都通过。IPv6 目标被拒绝（这台 VPS 本身没有公网 IPv6，限制同第三轮）。 |
+| Clash 订阅 | 固定 Mihomo 1.19.33 加载真实订阅：从服务器镜像下载 GeoSite、IP 库和 ASN 库，HTTPS 请求成功，出口为 VPS。 |
+| Shadowrocket 订阅 | 返回 200，带用量头，解码后是两个 VLESS 加一个 AnyTLS 节点。 |
+| 未测试 | Shadowrocket、Clash Verge Rev、OpenClash 真机；Xray 内核连 Reality 回落本机的节点；微信、Google Play 规则在真实设备上的效果；DNS、WebRTC 泄露。 |
+
 ## 历史记录
 
 2026-10-26 的旧版曾完成 Python 模板检查、Compose 解析、固定 sing-box 1.14.4 示例检查、S-UI v1.6.6 隔离启动与健康检查。**当时的协议组合与本次不同，这些记录不能证明本次三个节点或自动部署通过。** 单独校验镜像的核心版本也不代表 S-UI 实际内置版本。
@@ -96,6 +113,8 @@ python3 scripts/vps.py --state private/target.json export
 - [ ] 需要的 UDP 转发逐项测试；没有 UDP 入站监听不代表 UDP 应用一定不能转发。
 - [ ] Surge AnyTLS：记录系统、应用版本、实际连接结果。
 - [ ] v2rayN 和 v2rayNG VLESS：分别记录系统、应用、核心版本与结果。
+- [ ] Shadowrocket：记录系统、应用版本，三个节点分别连接的结果（含 AnyTLS）。
+- [ ] Reality 回落到本机：不带凭据连 443 看到本机 IP 证书；sing-box、Mihomo、Xray 客户端分别能认证。
 - [ ] Clash 订阅由固定 Mihomo 核心解析通过；Clash Verge Rev / OpenClash 真机导入后，三个节点、AUTO 切换、规则分流分别记录版本与结果。
 
 没有 Windows 或 Android 设备，就把对应客户端写成“未测试”；另一台设备或核心的成功不能代替它。

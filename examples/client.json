@@ -56,7 +56,7 @@
       "flow": "xtls-rprx-vision",
       "tls": {
         "enabled": true,
-        "server_name": "__REALITY_SERVER_NAME__",
+        "server_name": "__SERVER_IP__",
         "insecure": false,
         "utls": {
           "enabled": true,

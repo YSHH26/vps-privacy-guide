@@ -149,6 +149,45 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(s['backup_waived']['reason'],'owner-discarded-existing-data')
             self.assertNotIn('backup_restore_verified',s)
 
+    def acme_archive(self, name='acme/live/sui-vps/fullchain.pem'):
+        buffer=io.BytesIO()
+        with tarfile.open(fileobj=buffer,mode='w:gz') as bundle:
+            data=b'cert'*100;info=tarfile.TarInfo(name);info.size=len(data);bundle.addfile(info,io.BytesIO(data))
+        return buffer.getvalue()
+
+    def test_acme_saved_privately_and_restored_only_for_same_ip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);state=root/'target.json'
+            s={'ip':'192.0.2.1','ssh_alias':'my-vps'}
+            archive=self.acme_archive()
+            def fake(s_,command,**kwargs):
+                if command.startswith('test -f'):return subprocess.CompletedProcess([],0,'yes\n','')
+                if 'tar -C /etc/sui-vps -czf' in command:return subprocess.CompletedProcess([],0,archive,b'')
+                return subprocess.CompletedProcess([],0,b'',b'')
+            with patch.object(vps,'ssh',side_effect=fake):
+                self.assertTrue(vps.save_acme(s,state))
+            self.assertEqual(0o600,(root/vps.ACME_CARRY).stat().st_mode & 0o777)
+            with patch.object(vps,'ssh') as ssh:
+                self.assertFalse(vps.restore_acme({**s,'ip':'192.0.2.2'},state))
+                ssh.assert_not_called()
+                self.assertTrue(vps.restore_acme(s,state))
+                self.assertEqual(archive,ssh.call_args.kwargs['input'])
+                (root/vps.ACME_CARRY).write_bytes(b'tampered');(root/vps.ACME_CARRY).chmod(0o600)
+                ssh.reset_mock()
+                self.assertFalse(vps.restore_acme(s,state));ssh.assert_not_called()
+
+    def test_acme_archive_rejects_unexpected_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700)
+            for name in ['etc/passwd','acme/../../escape']:
+                archive=self.acme_archive(name)
+                def fake(s_,command,**kwargs):
+                    if command.startswith('test -f'):return subprocess.CompletedProcess([],0,'yes\n','')
+                    return subprocess.CompletedProcess([],0,archive,b'')
+                with patch.object(vps,'ssh',side_effect=fake):
+                    with self.assertRaises(ValueError):vps.save_acme({'ip':'192.0.2.1'},root/'target.json')
+                self.assertFalse((root/vps.ACME_CARRY).exists())
+
     def test_reinstall_requires_fresh_bound_provider_readiness(self):
         s={'ssh_alias':'my-vps','ip':'192.0.2.1','veid':1}
         with patch.object(vps,'api') as api:

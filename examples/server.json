@@ -62,12 +62,11 @@
       ],
       "tls": {
         "enabled": true,
-        "server_name": "__REALITY_SERVER_NAME__",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "__REALITY_HANDSHAKE_SERVER__",
-            "server_port": 443
+            "server": "__SERVER_IP__",
+            "server_port": 9443
           },
           "private_key": "__REALITY_PRIVATE_KEY__",
           "short_id": [

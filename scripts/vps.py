@@ -313,6 +313,46 @@ def provider_proof(s,state_path):
     print('Official provider read capabilities and private host proof verified; destructive contracts are recorded separately.')
 
 
+ACME_CARRY = 'acme-carry.tar.gz'
+
+
+def save_acme(s, state_path):
+    """Copy this project's ACME lineage (account, certificate, key) to the private dir before reinstall.
+
+    Reusing a still-valid certificate avoids Let's Encrypt's 5-per-week limit for the same IP.
+    """
+    present = ssh(s, 'test -f /etc/sui-vps/acme/live/sui-vps/fullchain.pem && echo yes || echo no', text=True).stdout.strip()
+    if present != 'yes':
+        return False
+    archive = ssh(s, 'set -eu; test ! -L /etc/sui-vps/acme; tar -C /etc/sui-vps -czf - acme').stdout
+    if len(archive) < 100 or len(archive) > 16*1024*1024:
+        raise ValueError('Unexpected ACME archive size')
+    with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:
+        for member in bundle.getmembers():
+            parts = Path(member.name).parts
+            if not parts or parts[0] != 'acme' or '..' in parts or member.name.startswith('/') or not (member.isfile() or member.isdir() or member.issym()):
+                raise ValueError('Unexpected ACME archive member')
+    write_private(state_path.parent/ACME_CARRY, archive)
+    save(state_path.parent/'acme-carry.json', {'ip': s['ip'], 'saved_at': time.time(),
+                                                'sha256': hashlib.sha256(archive).hexdigest()})
+    return True
+
+
+def restore_acme(s, state_path):
+    """Stage a saved ACME lineage for the same IP; the server validates it before adopting it."""
+    archive_path, meta_path = state_path.parent/ACME_CARRY, state_path.parent/'acme-carry.json'
+    if not archive_path.exists() or not meta_path.exists():
+        return False
+    meta = private_json(meta_path)
+    archive = secure_path(archive_path).read_bytes()
+    if meta.get('ip') != s['ip'] or meta.get('sha256') != hashlib.sha256(archive).hexdigest():
+        return False
+    ssh(s, 'set -eu; test ! -e /etc/sui-vps/acme/live/sui-vps/fullchain.pem || exit 0; '
+           'rm -rf /var/lib/sui-vps-acme-carry; install -d -m 700 /var/lib/sui-vps-acme-carry; '
+           'tar --no-same-owner --no-same-permissions -xzf - -C /var/lib/sui-vps-acme-carry', input=archive)
+    return True
+
+
 def reinstall(s, state_path, template, confirmation, discard_existing_data=False):
     expected = f"{s['ssh_alias']}:{s['ip']}:{s['veid']}"
     if confirmation != expected: raise ValueError('Explicit target confirmation required')
@@ -333,6 +373,11 @@ def reinstall(s, state_path, template, confirmation, discard_existing_data=False
     if not re.fullmatch(r'[0-9a-f-]{36}', boot): raise ValueError('Cannot record old boot identity')
     if boot != s['provider_capabilities']['baseline_boot_id']:
         raise ValueError('Old host boot identity changed since provider-proof')
+    # Keep the certificate even when other data is discarded; failure here only means a new issuance.
+    try:
+        if save_acme(s, state_path): print('Existing IP certificate saved privately for reuse after reinstall.')
+    except (subprocess.CalledProcessError, ValueError, OSError, tarfile.TarError):
+        print('Existing IP certificate could not be saved; deployment will request a new one.')
     public = run(['ssh-keygen', '-y', '-f', str(secure_path(s['identity_file']))], capture_output=True, text=True).stdout.strip()
     keys = api(s, 'getSshKeys'); save(state_path.parent/'provider-old-keys.json', keys)
     old = keys.get('ssh_keys_preferred', '')
@@ -569,6 +614,8 @@ for part in scripts deploy; do test ! -L "/opt/sui-vps/$part"; done
         c = private_json(s['provider_file'])
         if set(c) != {'veid','api_key'} or str(c['veid']) != str(s['veid']): raise ValueError('Provider target mismatch')
         ssh(s, 'umask 077; cat > /etc/sui-vps/kiwivm.json', input=json.dumps(c).encode())
+    if globals().get('CURRENT_STATE_PATH') is not None and restore_acme(s, CURRENT_STATE_PATH):
+        print('Saved IP certificate staged; the server adopts it only if it is valid for this IP.')
     return digest
 
 
@@ -687,7 +734,7 @@ def main():
     parser.add_argument('--network-backend',choices=['docker','native'],help='Network probe backend (default: docker)')
     parser.add_argument('--core-bin',help='Verified private native core; requires network --network-backend native')
     parser.add_argument('--archive')
-    parser.add_argument('--client',choices=['surge','v2ray','clash','all'],default=None)
+    parser.add_argument('--client',choices=['surge','v2ray','clash','shadowrocket','all'],default=None)
     parser.add_argument('--used-gb',type=float,help='traffic-calibrate only: GiB already used this period per the provider panel')
     parser.add_argument('--password-file'); parser.add_argument('--ask-password',action='store_true')
     parser.add_argument('--os-template'); parser.add_argument('--confirm-target'); parser.add_argument('--output')

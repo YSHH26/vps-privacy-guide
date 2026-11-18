@@ -196,12 +196,27 @@ def configure(state_path='/etc/sui-vps/state.json', *, api=None,
         pair = api.call('keypairs?k=reality')
         if not isinstance(pair, list) or len(pair) != 2 or not pair[0].startswith('PrivateKey: ') or not pair[1].startswith('PublicKey: '):
             raise PanelError('Unexpected S-UI Reality keypair response')
+        # 'self': unauthenticated handshakes are relayed to this server's own HTTPS (9443),
+        # so probes see a valid certificate for this IP instead of an unrelated site.
         state['reality'] = {'private_key': pair[0].split(': ', 1)[1],
                             'public_key': pair[1].split(': ', 1)[1],
                             'short_id': secrets.token_hex(8),
-                            'server_name': 'www.microsoft.com'}
+                            'target': 'self'}
         secure_json(state_path, state)
     reality, client = state['reality'], state['client']
+    if reality.get('target') == 'self':
+        # Clients dial an IP, so TLS sends no SNI; the server must accept an empty name.
+        reality_server = {'enabled': True,
+                          'reality': {'enabled': True, 'handshake': {'server': str(ipaddress.ip_address(state.get('reality_fallback_host', host))),
+                                                                     'server_port': int(state.get('ports', {}).get('https', 9443))},
+                                      'private_key': reality['private_key'], 'short_id': [reality['short_id']]}}
+        reality_client_name = host
+    else:
+        # Deployments created before self fallback keep their recorded external handshake target.
+        reality_server = {'enabled': True, 'server_name': reality['server_name'],
+                          'reality': {'enabled': True, 'handshake': {'server': reality['server_name'], 'server_port': 443},
+                                      'private_key': reality['private_key'], 'short_id': [reality['short_id']]}}
+        reality_client_name = reality['server_name']
     settings = api.call('settings')
     public_base = state.get('public_base_url', 'https://' + ('[' + host + ']' if ':' in host else host) + ':9443').rstrip('/')
     desired_settings = {'timeLocation': state.get('timezone', 'UTC'),
@@ -217,10 +232,8 @@ def configure(state_path='/etc/sui-vps/state.json', *, api=None,
         api.call('save', {'object': 'config', 'action': 'edit', 'data': json.dumps(base_config)})
     tls_objects = [
         {'name': 'sui-vps-reality',
-         'server': {'enabled': True, 'server_name': reality['server_name'],
-                    'reality': {'enabled': True, 'handshake': {'server': reality['server_name'], 'server_port': 443},
-                                'private_key': reality['private_key'], 'short_id': [reality['short_id']]}},
-         'client': {'enabled': True, 'server_name': reality['server_name'],
+         'server': reality_server,
+         'client': {'enabled': True, 'server_name': reality_client_name,
                     'utls': {'enabled': True, 'fingerprint': 'chrome'},
                     'reality': {'enabled': True, 'public_key': reality['public_key'], 'short_id': reality['short_id']}}},
         {'name': 'sui-vps-trusted-tls',
@@ -261,7 +274,8 @@ def configure(state_path='/etc/sui-vps/state.json', *, api=None,
             raise PanelError('Generated S-UI configuration failed readback verification')
         user, tls = users[0], inbound.get('tls', {})
         expected_tls = tls_objects[0 if node_type == 'vless-reality' else 1]['server']
-        if not same_subset(tls, expected_tls) or not same_subset(user, user_config[kind]):
+        if not same_subset(tls, expected_tls) or not same_subset(user, user_config[kind]) or (
+                node_type == 'vless-reality' and tls.get('server_name', '') != expected_tls.get('server_name', '')):
             raise PanelError('Generated S-UI credentials/TLS differ from intended configuration')
         node = {'type': node_type, 'name': tag, 'server': host, 'port': inbound['listen_port']}
         if kind == 'vless':
@@ -269,8 +283,8 @@ def configure(state_path='/etc/sui-vps/state.json', *, api=None,
         else:
             node['password'] = user['password']
         if node_type == 'vless-reality':
-            node.update(server_name=tls['server_name'], public_key=reality['public_key'],
-                        short_id=tls['reality']['short_id'][0])
+            node.update(server_name=reality_client_name, public_key=reality['public_key'],
+                        short_id=tls['reality']['short_id'][0], reality_target=reality.get('target', 'external'))
         else:
             node['server_name'] = host
         nodes.append(node)

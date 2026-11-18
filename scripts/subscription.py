@@ -26,10 +26,11 @@ import uuid
 
 TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{43,128}\Z')
 TRAFFIC_LOCK = threading.Lock()
-CLIENTS = ('surge', 'v2ray', 'clash')
-FILENAMES = {'surge': 'surge.conf', 'v2ray': 'v2ray.txt', 'clash': 'clash.yaml'}
+CLIENTS = ('surge', 'v2ray', 'clash', 'shadowrocket')
+FILENAMES = {'surge': 'surge.conf', 'v2ray': 'v2ray.txt', 'clash': 'clash.yaml', 'shadowrocket': 'shadowrocket.txt'}
 RULES_DIR = Path('/var/lib/sui-vps/rules')
-GEO_FILES = ('geosite.dat', 'geoip.metadb')
+GEO_FILES = ('geosite.dat', 'geoip.metadb', 'GeoLite2-ASN.mmdb')
+GEO_RE = '|'.join(re.escape(name) for name in GEO_FILES)
 PRIVATE_CIDRS = ('10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
                  '192.168.0.0/16', 'fc00::/7', 'fe80::/10')
 GIB = 1024 ** 3
@@ -160,13 +161,19 @@ def clash_config(config):
     china_doh = ['https://223.5.5.5/dns-query', 'https://120.53.53.53/dns-query']
     rules = [f'IP-CIDR,{server}/32,DIRECT,no-resolve']
     rules += [('IP-CIDR6,' if ':' in cidr else 'IP-CIDR,') + cidr + ',DIRECT,no-resolve' for cidr in PRIVATE_CIDRS]
-    rules += ['GEOSITE,category-ai-!cn,AI', 'GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve', 'MATCH,PROXY']
+    rules += ['GEOSITE,category-ai-!cn,AI',
+              # Google Play's mainland cache nodes are reachable directly but not from abroad.
+              'GEOSITE,google-play@cn,DIRECT',
+              'GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve',
+              # Tencent overseas network (WeChat connects by IP to HK/SG servers outside CN IP lists).
+              'IP-ASN,132203,DIRECT,no-resolve',
+              'MATCH,PROXY']
     profile = {
         'mixed-port': 7890, 'allow-lan': False, 'mode': 'rule', 'log-level': 'warning',
         # Keep IPv6 on so a TUN captures it; DNS returns no AAAA and the server rejects IPv6 egress.
         'ipv6': True, 'unified-delay': True,
         'geodata-mode': False, 'geo-auto-update': True, 'geo-update-interval': 24,
-        'geox-url': {'geosite': geo + 'geosite.dat', 'mmdb': geo + 'geoip.metadb'},
+        'geox-url': {'geosite': geo + 'geosite.dat', 'mmdb': geo + 'geoip.metadb', 'asn': geo + 'GeoLite2-ASN.mmdb'},
         'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'fake-ip', 'fake-ip-range': '198.18.0.1/16',
                 'fake-ip-filter': ['+.lan', '+.local', '+.msftconnecttest.com', '+.msftncsi.com'],
                 'respect-rules': True, 'default-nameserver': ['223.5.5.5', '120.53.53.53'],
@@ -186,6 +193,25 @@ def clash_config(config):
 
 def v2ray_subscription(config):
     return base64.b64encode(('\n'.join(vless_links(config)) + '\n').encode()).decode() + '\n'
+
+
+def anytls_links(config):
+    links = []
+    for node in config['nodes']:
+        if node['type'] != 'anytls':
+            continue
+        host, port, sni = checked_node(node)
+        authority = f'[{host}]' if ':' in host else host
+        query = urlencode({'sni': sni, 'insecure': '0'})
+        name = quote(str(node.get('name') or node['type']), safe='')
+        links.append(f'anytls://{quote(atom(node["password"]), safe="")}@{authority}:{port}?{query}#{name}')
+    return links
+
+
+def shadowrocket_subscription(config):
+    # Same VLESS links as v2ray plus AnyTLS; an independent token allows separate rotation.
+    links = vless_links(config) + anytls_links(config)
+    return base64.b64encode(('\n'.join(links) + '\n').encode()).decode() + '\n'
 
 
 def subscription_urls(config):
@@ -309,6 +335,10 @@ def local_traffic_snapshot(state_path, counters, target, *, now=None, calibrate_
             'reset_at': int(reset_at), 'updated_at': now, 'checked_at': now}
 
 
+RENDERERS = {'surge': surge_config, 'v2ray': v2ray_subscription, 'clash': clash_config,
+             'shadowrocket': shadowrocket_subscription}
+
+
 def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=None, traffic_cache=None,
                 rules_dir=RULES_DIR):
     if host != '127.0.0.1':
@@ -329,7 +359,7 @@ def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=No
             try:
                 cfg = json.loads(export_path.read_text())
                 subscription_urls(cfg)  # Validate tokens and HTTPS origin before serving.
-                geo = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/geo/(geosite\.dat|geoip\.metadb)', self.path)
+                geo = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/geo/(' + GEO_RE + ')', self.path)
                 if geo:
                     if not hmac.compare_digest(geo.group(1), cfg['subscriptions']['clash']):
                         self.reply(404, b'Not found\n')
@@ -339,7 +369,7 @@ def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=No
                         raise ValueError('Empty rule data')
                     self.reply(200, data, content_type='application/octet-stream')
                     return
-                match = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/(surge\.conf|v2ray\.txt|clash\.yaml)', self.path)
+                match = re.fullmatch(r'/s/([A-Za-z0-9_-]{43,128})/(' + '|'.join(re.escape(x) for x in FILENAMES.values()) + ')', self.path)
                 if not match:
                     self.reply(404, b'Not found\n')
                     return
@@ -348,7 +378,7 @@ def make_server(export_path, host='127.0.0.1', port=8090, traffic_credentials=No
                 if not hmac.compare_digest(token, cfg['subscriptions'][client]):
                     self.reply(404, b'Not found\n')
                     return
-                content = {'surge': surge_config, 'v2ray': v2ray_subscription, 'clash': clash_config}[client](cfg)
+                content = RENDERERS[client](cfg)
                 traffic = traffic_snapshot(traffic_credentials, traffic_cache) if traffic_credentials and traffic_cache else cfg.get('traffic', {})
                 self.reply(200, content.encode(), traffic, clash=client == 'clash')
             except (OSError, ValueError, KeyError, TypeError):
