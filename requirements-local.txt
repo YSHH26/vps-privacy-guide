@@ -1,0 +1,3 @@
+# Local account-sheet generation and HTTPS probe trust for Python installations without CA roots.
+qrcode==8.2
+certifi==2026.10.23

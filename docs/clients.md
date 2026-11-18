@@ -1,45 +1,46 @@
 # 把手机和电脑连上
 
-服务器配好后，先找一台常用设备连上试试。能用了，再去做 [IP 防泄露检查](leak-protection.md)，看有没有流量绕过代理。
+先打开本机账号 HTML，找到与你客户端对应的订阅。每条节点单独试过以后，再做 [IP 防泄露检查](leak-protection.md)。订阅提供节点连接资料。当前默认没有国内直连或 AI 专用规则，Surge 完整配置的 FINAL 指向代理；不要把它理解为已有国内外智能分流。它也不会自动替你配置整台设备的 TUN、DNS 或断线保护。
 
-先确认你装的客户端支持要用的协议。有些版本可以用 Reality，却还不支持 AnyTLS，所以导入后要一个节点一个节点地试。服务器用 sing-box，并不要求手机和电脑也用同一个内核。
+## 按客户端导入
 
-## 从后台导出节点
+| 客户端 | 默认使用 | 导入办法 |
+| --- | --- | --- |
+| Surge | AnyTLS | 取账号页中的 Surge 格式订阅，按当前版本的远程配置/代理列表功能添加 |
+| v2rayN | VLESS Reality、VLESS TLS | 在订阅分组添加 HTTPS 地址并更新；也可粘贴 VLESS 分享链接 |
+| v2rayNG | VLESS Reality、VLESS TLS | 在订阅设置添加 HTTPS 地址并更新；也可扫描节点二维码或导入链接 |
 
-1. 在面板创建用户、关联入站并填写公网发布地址。
-2. 选择客户端支持的节点链接或订阅格式。S-UI 提供链接、sing-box JSON 和 Clash 等形式；具体协议能否导出需检查实际内容。
-3. 保持 SSH 隧道开启时，可以把面板给出的本机订阅地址的主机/端口改为 `127.0.0.1:12096`，其余路径与凭据保持不变，再在自己的电脑下载。
-4. 如果导出的节点地址是 `127.0.0.1` 或 Docker 地址，回面板修改入站发布地址；节点地址应该是 VPS 公网 IP，而不是订阅下载地址。
-5. 手机不能把电脑上的 `127.0.0.1` 订阅当作自己的远程订阅使用。首次可以安全传输下载好的配置文件；远程自动刷新需要 HTTPS 订阅服务。
+Surge 不依赖支持 VLESS 的测试版。客户端版本若不识别某个节点，先检查应用与核心能力；不要把未知协议硬塞进配置。AnyTLS 是否适合其他客户端，也以实际版本为准。以上是导入方向，具体菜单及最低实测版本要在真实设备上记录，未测试的版本不能承诺兼容。
 
-如果你希望手机以后能自动更新订阅，需要再给订阅服务配一个 HTTPS 入口，转到服务器本地的 2096 端口。证书要可信，日志里也不要记录带凭据的链接。注意 TCP 443 已经留给 Reality，不能再让 Nginx 占同一个端口。只开放订阅入口就好，管理后台继续通过 SSH 访问。
+节点订阅与完整 Surge 配置不同。如果下载的是代理列表，使用当前客户端对应的列表功能；不要直接覆盖现有整份配置。Clash/Mihomo 或 Shadowrocket 输出即使提供，也不能当作 Surge 配置导入；规则格式和语义需要分别校验。
 
-订阅链接相当于访问凭据。不要使用公开第三方订阅转换服务处理私人节点，也不要在 Issue 中粘贴订阅。
+添加后手动更新一次，逐条选中节点测试受控 HTTPS 地址，确认出口。关闭自动切换，避免一条坏节点被另一条掩盖。再分别记录 Windows / Android / Mac 等实际客户端和核心版本。
 
-来源：[S-UI 订阅文档](https://github.com/alireza0/s-ui/wiki/Subscription-Service)。
+## 在线订阅要注意什么
 
-## 想直接用 sing-box 测试
+HTTPS 使用 TCP 9443，后端仍在服务器回环。证书验证必须开启，IP 证书要能按 IP SAN 验证。Reality 占用 TCP 443，不能让 Nginx 再占同一端口。订阅地址含高熵随机令牌，能拿到链接的人可能拿到节点；链接外泄后需要轮换。
 
-[examples/client.json](../examples/client.json) 是最小测试配置：仅开放本机 `127.0.0.1:1080` 的 HTTP/SOCKS 代理，默认选择 Reality。它没有启用 TUN、没有自动故障转移，也没有提供国内外 DNS/流量分流。
+自动刷新时使用账号页中为该客户端生成的地址，不要把某一种格式改个后缀冒充另一种。订阅只在自己的服务上生成/转换，不使用第三方在线转换。分享链接、二维码和 HTML 同样都含秘密，不要上传。
 
-替换占位符后，可将 selector 的 `default` 分别改成 `reality`、`anytls`、`hysteria2`，重启客户端测试每条入口。客户端与服务端的 UUID、密码、Reality 公钥/short ID 必须配对；AnyTLS/Hysteria2 的 `server_name` 填证书覆盖的身份。
+节点连接地址应该是 VPS 公网 IP 或证书域名，不能是 `127.0.0.1`、Docker 地址或本机 SSH 隧道地址。如果地址不对，回到 S-UI 检查用户关联、入站发布地址、外部端口和客户端出站模板。
+
+来源：[S-UI 订阅说明](https://github.com/alireza0/s-ui/wiki/Subscription-Service)。
+
+## 用 sing-box 单独测试节点
+
+[客户端模板](../examples/client.json) 只开放本机 `127.0.0.1:1080` 的 HTTP/SOCKS 代理，默认选 Reality。它不启用 TUN、自动切换、DNS 分流或故障阻断。
+
+替换全部占位符，将 selector 的 `default` 分别改为 `reality`、`vless-tls`、`anytls`，每次重启后单独测试。两条 VLESS 使用同一 S-UI 用户的 UUID 和 Vision；Reality 填公钥、short ID、server_name 和 Vision，不能把服务端私钥放进客户端。VLESS TLS 和 AnyTLS 的证书身份须正确。
 
 ```sh
 sing-box check -c private/client.json
 sing-box run -c private/client.json
 ```
 
-在另一个终端，用自己确认的 HTTPS 测试地址检查代理请求：
+另开终端，用自己确认的 HTTPS 地址检查：
 
 ```sh
 curl --proxy socks5h://127.0.0.1:1080 --max-time 20 https://example.com/
 ```
 
-`socks5h` 会把目标域名交给代理侧解析。它只验证此请求经过代理，不代表整台电脑的其他程序、DNS 或 WebRTC 都经过代理。全设备接入需要另外配置客户端的 TUN/路由策略，并单独验收。
-
-## 常见差异
-
-- Hysteria2 使用 UDP；面板能打开、AnyTLS 能连通，都不能证明 UDP 已放行。
-- Reality 不使用普通 TLS 证书路径，但要正确填写公钥、short ID、server_name 和 flow。
-- IP 证书模式下，确保客户端能够按证书的 IP SAN 验证；不要通过跳过验证来掩盖参数错误。
-- TCP/UDP 入口在同一台 VPS 上不会自动组成主备组；自动选择和切换应在客户端明确配置。
+`socks5h` 把本次目标域名交给代理侧解析。这只能证明这个请求走了代理，其他程序、DNS、IPv6、WebRTC 和退出客户端后的表现还得各自测试。三个 TCP 节点能否转发 UDP 应用也要单测，不能从没有 UDP 入站监听得出结论。

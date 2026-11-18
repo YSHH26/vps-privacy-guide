@@ -8,7 +8,7 @@ permissions:
 jobs:
   templates:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,7 +18,13 @@ jobs:
           python3 -m unittest discover -s tests -v
           docker compose -f deploy/compose.yaml config --quiet
           git diff --check
-      - name: Validate with pinned sing-box core
+      - name: Install offline QR dependency
+        run: python3 -m pip install -r requirements-local.txt
+      - name: Validate pinned core and actual panel API
         env:
           VALIDATE_CORE: "1"
+          RUN_PANEL_INTEGRATION: "1"
+          RUN_PANEL_NETWORK: "1"
+          RUN_PROBE_INTEGRATION: "1"
+          RUN_CLIPROXY_INTEGRATION: "1"
         run: python3 -m unittest discover -s tests -v

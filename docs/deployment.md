@@ -1,96 +1,139 @@
 # 把服务器配起来
 
-这一步先把 S-UI 管理后台装好，再进去添加节点。证书和三种连接方式都要接着配置，不是运行完启动命令就全部完成了。
+你在自己的电脑运行仓库入口，由它通过 SSH 检查和配置 VPS。三个节点由 S-UI 管理，不另外运行裸 sing-box；面板、订阅和 CLIProxyAPI 通过可信 HTTPS 访问。日常部署不会重装操作系统。
 
-下面会分别写清楚哪些命令在服务器上运行，哪些在你自己的电脑上运行。如果让 AI 帮忙，也让它按这个顺序来。
+## 1. 准备本机目标文件
 
-## 1. 先看看服务器里有什么
+本机需要 Python 3.9 或更高版本（二维码库还要满足 requirements-local.txt 的 Python 版本）、OpenSSH、curl，以及 SSH 密钥或服务商提供的初始密码。先读 [服务器准备](buy-vps.md)，确认 SSH 别名指向预期公网 IP 和 root 用户。不要把密码、私钥、API Key 放进命令参数或聊天。
 
-先用 SSH 登录服务器，再运行下面几条命令。我们要看一下系统、Docker 是否可用，以及要用的端口有没有被其他服务占住。这里检查的是 VPS，不是你自己电脑上的 Docker。
+初始密码可以经 `init --password-file` 或 `init --ask-password` 引导，需要本机 `sshpass`；已有密钥也可直接用 `init` 建立专用接入。两种方式都先核验可信 SSH 主机公钥，不自动接受未知指纹。具体准备见 [首次接入步骤](pilot.md)。
 
-```sh
-uname -m
-cat /etc/os-release
-docker version
-docker compose version
-sudo ss -lntup
-```
-
-这份配置会用到 TCP 443、TCP 8443 和 UDP 443。如果已经有人在用，先弄清楚是什么服务，别直接停掉它。申请证书如果采用 HTTP-01 校验，还会用到 TCP 80。
-
-服务商后台如果有防火墙或安全组，也要放行相应端口，SSH 的登录端口记得保留。Docker 的端口转发和普通入站规则不完全一样，所以不能只看 UFW 显示关闭，就认为外面一定连不进来。
-
-## 2. 下载教程里的配置，启动后台
-
-接着把仓库下载到服务器的 `/opt/sui-vps`。如果这里已经有同名目录，先检查里面是什么，不要直接覆盖。
-
-如果刚才提示 Docker 或 Compose 不存在，要先安装好再继续。
+建议在本机虚拟环境安装账号页需要的二维码库，再执行入口：
 
 ```sh
-sudo git clone https://github.com/makerkitt/vps-privacy-guide.git /opt/sui-vps
-cd /opt/sui-vps
-sudo install -d -m 700 deploy/state/db deploy/state/cert
-sudo docker compose -f deploy/compose.yaml config --quiet
-sudo docker compose -f deploy/compose.yaml pull
-sudo docker compose -f deploy/compose.yaml up -d
-sudo docker compose -f deploy/compose.yaml ps
-sudo docker compose -f deploy/compose.yaml exec -T s-ui ./sui healthcheck
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -r requirements-local.txt
+umask 077
+mkdir -p private
+chmod 700 private
+python3 scripts/vps.py --help
 ```
 
-最后一条会检查后台有没有开始监听。如果报错，先停在这里看原因，别急着继续添加节点。
+在本机建立 `private/target.json`，权限设为 600。最小目标示例：
 
-以后用户和节点信息会保存在 `deploy/state/db`，证书放在 `deploy/state/cert`，不要随手删除这两个目录。容器里看到的证书路径是 `/app/cert`，后面填写时会用到。这里使用的具体版本放在 [版本清单](../versions.json)。
+```json
+{
+  "ssh_alias": "my-vps",
+  "ip": "192.0.2.1",
+  "timezone": "UTC"
+}
+```
 
-## 3. 从自己的电脑访问面板
+这里的地址是文档保留地址，必须替换。SSH 别名需指向相同 IP，并使用 root；非 root 环境要先安排适当的管理权限，脚本会拒绝不符的目标。目标文件保存 SSH 别名、预期 IP、证书身份等本次部署资料；提供商凭据也只保存在受限私有文件中。使用本地编辑器填写，别把含秘密的内容打印到聊天或共享日志。具体字段以脚本帮助及状态文件校验提示为准。
 
-现在回到你自己的电脑，另开一个终端。把 `my-vps` 换成你的 SSH 别名，运行：
+首次用密码接入时，在目标文件配置经可信渠道核验的 `known_hosts_file`，再运行下面命令；密码文件与目标文件都放在权限 700 的目录中，权限为 600。成功确认独立新密钥连接后，密码文件才会删除，现有 SSH 别名不会修改：
+
+```sh
+python3 scripts/vps.py --state private/target.json init --password-file private/initial-password
+```
+
+已有可用密钥可以省略 `--password-file`。不要拿未经核验的 `ssh-keyscan` 输出充当可信主机信息。
+
+## 2. 先只读确认目标
+
+```sh
+python3 scripts/vps.py --state private/target.json preflight
+```
+
+检查实际 SSH 目标、公网 IP、系统、架构、Docker 服务、监听端口和防火墙。本次检查绑定服务器 boot ID、目标配置和源文件摘要；重启、改配置、改源文件或超过一小时后需要重跑。目标不一致就停下；已有服务占用端口时，先弄清归属，不直接停掉或覆盖。
+
+| 用途 | 默认入口 |
+| --- | --- |
+| VLESS Reality | TCP 443 |
+| VLESS TLS | TCP 2443 |
+| AnyTLS | TCP 8443 |
+| HTTPS 面板、订阅 | TCP 9443 |
+| CLIProxyAPI HTTPS | TCP 9444 |
+| IP 证书 HTTP 校验 | TCP 80 |
+| S-UI 面板 / 原生订阅后端 | 127.0.0.1:2095 / 2096 |
+
+保留实际 SSH 端口。默认没有 Hysteria2，也不开放 UDP 443。节点能不能转发 UDP 应用，需要按客户端测试。Docker 发布端口与 UFW 普通规则不同，要从外部确认监听范围，不能只看 UFW 状态。
+
+## 3. 执行部署
+
+当前自动部署申请公网 IP 证书，需要公网 TCP 80 可达；域名方式见 [TLS 说明](tls.md)，不属于当前自动签发分支。证书必须能在客户端正常验证；申请失败时不要关闭验证来继续。
+
+```sh
+python3 scripts/vps.py --state private/target.json deploy
+```
+
+部署阶段应使用 [固定版本清单](../versions.json)，生成独立管理员、节点与订阅凭据，并保存到受限状态目录。失败会停止；先修正原因，再重跑同一阶段，不能靠手工跳过检查。重启 S-UI 或更新证书会中断现有代理连接。已有部署的源文件摘要变化时，会先用服务器上已安装的旧脚本备份旧配置、版本和数据库，再上传新代码；备份短暂停机，也会中断连接。备份失败就停止，不能继续覆盖。
+
+S-UI 是用户、TLS 和入站配置的唯一来源。不要直接写数据库；不要把 [服务端模板](../examples/server.json) 当作面板导入文件。示例只用来解释原生配置和执行固定核心检查。面板对象之间还有用户、TLS、发布地址和客户端模板关联。
+
+| 节点 | S-UI 类型 | TLS 与认证 |
+| --- | --- | --- |
+| `reality` | vless，443/TCP | Reality 独立密钥、short ID、匹配的握手目标；UUID，Vision |
+| `vless-tls` | vless，2443/TCP | 可信证书；同一用户 UUID，Vision |
+| `anytls` | anytls，8443/TCP | 可信证书；独立随机密码 |
+
+面板和原生订阅后端继续回环监听，Nginx 在 HTTPS 9443 提供外部访问。CLIProxyAPI 后端也只监听回环；初始不配置上游账号。不要额外开放未加密的管理端口。
+
+## 4. 检查与生成账号页
+
+```sh
+python3 scripts/vps.py --state private/target.json verify
+python3 scripts/vps.py --state private/target.json network
+python3 scripts/vps.py --state private/target.json export
+```
+
+`network` 默认在你自己的电脑上用 Docker 中的固定核心逐条连接三个节点，检查 HTTPS、出口 IP、错误凭据拒绝和恢复后的连接。它需要本机 Docker，可向外部 HTTPS 测试站点发请求；它不测试真实客户端、UDP 或防泄露。结果保存在 `private/network.json`。`export` 重新下载当前节点后，只合并与节点认证、服务器部署和版本指纹相符的本机网络报告；节点或部署变更后，旧报告不会继续显示通过。
+
+如果本机 Docker 不可用，而你已将 [版本清单](../versions.json) 中匹配本机平台的官方核心单独下载到私有目录并核对了压缩包和二进制的 SHA256，可显式选择原生核心：
+
+```sh
+python3 scripts/vps.py --state private/target.json network --network-backend native --core-bin private/native-client/sing-box
+```
+
+原生后端仍会核对固定版本与清单中的摘要，不会自动下载、信任任意二进制或在 Docker 失败后悄悄切换。它只从指定私有路径运行临时客户端，不安装全局核心、不修改服务器，也不需要重启你本机其他虚拟机。两种后端都属于固定核心节点检查，不能代替 Surge、v2rayN/NG 或防泄露测试。报告继续按当前节点与部署指纹匹配。
+
+`verify` 的服务检查报告保存到本机 `private/verification.json`，阶段日志保存在同目录的 `stage-verify.log`；其他部署阶段日志也写入 `stage-阶段名.log`。这些文件可能含敏感诊断，不要公开。未覆盖或未执行的检查仍然是未测试。再打开 `export` 输出的本机 HTML，里面有面板地址/账号、按客户端区分的订阅、节点、CLIProxyAPI 管理与调用信息。HTML 不在服务器托管，权限应为 600；它包含明文秘密，默认遮挡只防旁观。
+
+公网面板使用 `https://你的证书身份:9443/app/`，订阅使用同端口的 `/s/` 路径。CLIProxyAPI 单独使用 HTTPS 9444，管理中心路径是 `/management.html`，API Base URL 使用 `/v1`。完整订阅地址含令牌，从本机账号页取用，不自行猜测。证书身份必须与证书 SAN 对应。不要把订阅 URL 粘到公开检查站点或第三方转换服务。
+
+按 [客户端说明](clients.md) 逐个导入，再执行 [完整检查清单](verification.md)。能打开后台不能证明节点可用；节点可用也不能证明设备防泄露。
+
+## 5. 日常维护入口
+
+下面的命令使用服务器已经安装的脚本，不上传新代码，也不要求一小时内的 preflight。目标和 SSH 主机校验仍会执行。安装了较旧版本的服务器若没有对应阶段，先按完整部署流程检查和更新，不能现场绕过脚本：
+
+```sh
+python3 scripts/vps.py --state private/target.json backup
+python3 scripts/vps.py --state private/target.json cert-dry-run
+python3 scripts/vps.py --state private/target.json cert-sync
+python3 scripts/vps.py --state private/target.json restore-check
+python3 scripts/vps.py --state private/target.json rotate-subscriptions --client all
+```
+
+备份会短暂停机；证书同步可能重启服务。`cert-dry-run` 检查续期签发，不能代替正式证书同步与服务加载检查。`restore-check` 只在隔离位置检查备份恢复，不覆盖现网。令牌轮换可选 `surge`、`v2ray` 或 `all`，完成后需要各客户端更新订阅，再运行 `export` 获取新地址。具体限制见 [维护说明](maintenance.md)。
+
+需要把已有备份恢复到现网时，先执行 `restore-check`，确认选定备份、目标和旧版本相符，再在已安装支持恢复阶段的服务器上运行：
+
+```sh
+python3 scripts/vps.py --state private/target.json restore --archive /var/backups/sui-vps/__SELECTED_BACKUP__.tar.gz --confirm-target 192.0.2.1
+```
+
+将示例地址换成你的预期公网 IP，备份路径必须是服务器 `/var/backups/sui-vps/` 中的实际文件。恢复会中断服务并替换本项目状态；不要用它代替从零重装验收。入口使用服务器已安装脚本，不会先上传新版本。恢复后重新执行 `verify`、本机 `network` 和真实客户端检查，再导出本机账号页。恢复检查与实际恢复是不同步骤，未执行实际恢复前不能标记通过。
+
+## 6. 需要手工排查面板时
+
+[Compose 模板](../deploy/compose.yaml) 保留 2095/2096 的回环映射。只有 SSH 隧道可以临时访问内部 HTTP，用于排查；正常使用走 HTTPS。
 
 ```sh
 ssh -N -L 12095:127.0.0.1:2095 -L 12096:127.0.0.1:2096 my-vps
 ```
 
-这个终端先留着，不要关闭。它把你电脑上的入口接到了服务器后台。然后在电脑浏览器打开 `http://127.0.0.1:12095/app/`。
+把 `my-vps` 换成自己的别名，在本机浏览器打开 `http://127.0.0.1:12095/app/`。保留终端连接，不要把这个本机地址发给手机当成远程订阅。
 
-如果页面打不开，先看 SSH 连接是否还在。也可以在服务器终端运行下面的命令，查看实际入口和初始账号：
-
-```sh
-sudo docker compose -f /opt/sui-vps/deploy/compose.yaml exec s-ui ./sui uri
-sudo docker compose -f /opt/sui-vps/deploy/compose.yaml exec s-ui ./sui admin -show
-```
-
-命令可能显示登录信息，自己看就好，不要贴到聊天或 Issue。第一次登录后，先把管理员用户名和密码改成自己的。
-
-这里浏览器打开的是本机 HTTP 地址；电脑到服务器这一段由 SSH 加密，后台没有直接开放给公网。
-
-## 4. 先把证书填好
-
-AnyTLS 和 Hysteria2 会用到证书。先按 [证书说明](tls.md) 准备好，再回到 S-UI，添加下面两套 TLS 配置：
-
-| 配置名 | 服务端 | 客户端订阅配置 |
-| --- | --- | --- |
-| `node-tls` | TLS 开启；证书 `/app/cert/fullchain.pem`；私钥 `/app/cert/privkey.pem` | TLS 开启；server_name 为证书覆盖的域名或 IP；insecure=false |
-| `node-reality` | Reality 开启；独立私钥、short_id、握手地址/端口及匹配的 server_name | Reality 公钥、相同 short_id/server_name；uTLS 开启，fingerprint=chrome |
-
-私钥留在服务器上，不要发给客户端。以后证书续期了，还得让服务读到新文件；这一步放在 [维护说明](maintenance.md) 里。
-
-## 5. 添加三种连接方式
-
-面板里说的“入站”，就是设备连接服务器的入口。新建三个入站，按下面填写，监听地址都设为 `0.0.0.0`。Hysteria2 用 UDP，不要给它套上 TCP 传输设置。
-
-| 名称 | 类型 | 端口 | TLS 配置 | 认证 |
-| --- | --- | --- | --- | --- |
-| `anytls` | anytls | 8443/TCP | node-tls | 独立随机密码 |
-| `hysteria2` | hysteria2 | 443/UDP | node-tls | 另一个独立随机密码 |
-| `reality` | vless | 443/TCP | node-reality | 随机 UUID，flow=xtls-rprx-vision |
-
-先用最少的设置把 Hysteria2 连通，混淆和端口跳跃暂时不用开，带宽也不要随便填一个很大的数字。以后如果加混淆，客户端还要填相同的类型和密码。
-
-再创建客户端/用户并关联入站。不同协议若需要独立密码，可创建独立用户并分别关联相应入站。在入站的发布地址中填写 VPS 公网 IP 与外部端口。检查订阅的客户端出站配置不为空，否则可能不会出现在订阅中。原生字段参考 [服务端模板](../examples/server.json) 和 [客户端模板](../examples/client.json)。
-
-**不要直接把这两个 JSON 文件导入 S-UI 数据库。** S-UI 另有用户、TLS 关联、发布地址和出站模板等面板对象，格式不同。[上游配置对象文档](https://github.com/alireza0/s-ui/wiki/Configuration-Objects)
-
-## 6. 连上试试
-
-通过面板复制节点或导出客户端支持的配置。首次可在隧道内下载订阅再导入本地文件；需要手机长期自动刷新时另行提供 HTTPS 订阅入口，见 [客户端说明](clients.md)。
-
-接下来按 [检查清单](verification.md) 一项项测试。能打开 S-UI，只说明后台启动了；三种节点能不能用，还要在你的设备上分别连接一次。
+若需要手工调整 S-UI，按 [上游配置对象说明](https://github.com/alireza0/s-ui/wiki/Configuration-Objects) 和实际版本操作，并同步后续订阅及本机交付；不凭猜测构造 API 请求。
