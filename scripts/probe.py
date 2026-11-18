@@ -278,7 +278,10 @@ class DockerBackend:
         with tempfile.TemporaryDirectory(prefix='sui-probe-') as directory:
             path = Path(directory)/'client.json'
             write_report(path, config)
-            common = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+            # The bind mount contains a private directory and file. Match their
+            # owner so a capability-free process can read them on Linux.
+            common = ['--user', f'{os.getuid()}:{os.getgid()}',
+                      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                       '--read-only', '--pids-limit', '128', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
                       '-v', directory+':/work:ro']
             # A malformed/unsupported config must fail before any authentication assertion.
