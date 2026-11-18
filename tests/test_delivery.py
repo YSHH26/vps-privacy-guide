@@ -74,18 +74,21 @@ class SubscriptionTests(unittest.TestCase):
             base = 'http://127.0.0.1:' + str(server.server_port)
             try:
                 with contextlib.redirect_stderr(io.StringIO()) as logs:
-                    response = urlopen(base + '/s/' + 'A' * 43 + '/surge.conf')
-                    self.assertIn(b'anytls', response.read())
-                    self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                    with urlopen(base + '/s/' + 'A' * 43 + '/surge.conf') as response:
+                        self.assertIn(b'anytls', response.read())
+                        self.assertEqual(response.headers['Cache-Control'], 'no-store')
                     for suffix in ['/s/wrong/surge.conf', '/export.json', '/s/' + 'A' * 43 + '/v2ray.txt']:
                         with self.assertRaises(HTTPError) as error:
                             urlopen(base + suffix)
-                        self.assertEqual(error.exception.code, 404)
+                        with error.exception as response:
+                            self.assertEqual(response.code, 404)
                     cfg = fixture()
                     cfg['subscriptions']['surge'] = 'D' * 43
                     path.write_text(json.dumps(cfg))
-                    with self.assertRaises(HTTPError):
+                    with self.assertRaises(HTTPError) as error:
                         urlopen(base + '/s/' + 'A' * 43 + '/surge.conf')
+                    with error.exception as response:
+                        self.assertEqual(response.code, 404)
                 self.assertEqual(logs.getvalue(), '')
             finally:
                 server.shutdown()
