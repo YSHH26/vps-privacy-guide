@@ -502,6 +502,84 @@ def bootstrap(s, state_path, *, initial=False, password_file=None, ask_password=
     print('Trusted host and independent SSH key verified; initial password file removed if supplied.')
 
 
+SECRET_PROMPTS = {
+    'password': ('服务器 root 密码', '请输入服务器的 root 密码。它只会存进本机 private 文件夹，不会显示出来。'),
+    'api-key': ('搬瓦工 API Key', '请输入 KiwiVM「API」页里的 API Key。它只会存进本机 private 文件夹，不会显示出来。'),
+}
+
+
+def _dialog_commands(title, message):
+    """Native hidden-input dialogs; each prints the answer on stdout only."""
+    if sys.platform == 'darwin':
+        script = ('display dialog '+json.dumps(message)+' with title '+json.dumps(title)+
+                  ' default answer "" with hidden answer buttons {"取消","好"} default button "好" cancel button "取消"\n'
+                  'text returned of result')
+        return [['osascript', '-e', script]]
+    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')): return []
+    commands = []
+    if shutil.which('zenity'): commands.append(['zenity', '--password', '--title', title])
+    if shutil.which('kdialog'): commands.append(['kdialog', '--title', title, '--password', message])
+    return commands
+
+
+def _tk_dialog(title, message):
+    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')): return None
+    try:
+        import tkinter
+        from tkinter import simpledialog
+        root = tkinter.Tk(); root.withdraw()
+        try: return simpledialog.askstring(title, message, show='*', parent=root)
+        finally: root.destroy()
+    except Exception:
+        return None
+
+
+def ask_secret(kind):
+    title, message = SECRET_PROMPTS[kind]
+    for command in _dialog_commands(title, message):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            value = result.stdout.rstrip('\r\n')
+            if value: return value
+        raise ValueError('输入框被取消或内容为空，没有保存任何东西')
+    value = _tk_dialog(title, message)
+    if value is None and sys.stdin.isatty():
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', getpass.GetPassWarning)
+            try: value = getpass.getpass(title+'（输入时不显示）: ')
+            except getpass.GetPassWarning: value = None
+    if value is None:
+        raise ValueError('这台电脑弹不出输入框；请用编辑器把'+title+'写进权限 600 的 private 文件，见 docs/deployment.md')
+    value = value.rstrip('\r\n')
+    if not value: raise ValueError('输入内容为空，没有保存任何东西')
+    return value
+
+
+def ask_secrets(s, state_path, which):
+    kinds = ['password', 'api-key'] if which == 'all' else [which]
+    if which == 'all' and not s.get('veid'): kinds.remove('api-key')
+    if 'api-key' in kinds and not re.fullmatch(r'[0-9]+', str(s.get('veid', ''))):
+        raise ValueError('先在目标状态里写好 veid，再输入 API Key')
+    if s.get('ip'): ipaddress.IPv4Address(s['ip'])
+    for kind in kinds:
+        value = ask_secret(kind)
+        if kind == 'password':
+            target = state_path.parent/'initial-password'
+            write_private(target, (value+'\n').encode())
+            s['initial_password_file'] = str(target)
+        else:
+            if re.search(r'\s', value): raise ValueError('API Key 里不应有空格或换行')
+            target = state_path.parent/'provider.json'
+            save(target, {'veid': str(s['veid']), 'api_key': value})
+            s['provider_file'] = str(target)
+        value = None
+        save(state_path, s)
+    print('已保存到本机 private 文件夹：'+'、'.join(SECRET_PROMPTS[k][0] for k in kinds))
+
+
 def preflight(s, path):
     command = "set -eu; uname -m; cat /etc/os-release; cat /proc/sys/kernel/random/boot_id; ip -4 addr show scope global; free -m; ss -lntup; command -v docker >/dev/null && docker ps || true; command -v ufw >/dev/null && ufw status || true"
     result = ssh(s, command, text=True)
@@ -730,7 +808,7 @@ def remote_stage(s, command, state_path, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True)
-    parser.add_argument('stage', choices=['preflight','deploy','base','cert','panel','services','maint','verify','export','provider-info','provider-proof','reinstall','bootstrap','init','backup','cert-sync','cert-dry-run','restore-check','network','rotate-subscriptions','restore','surge','rules','traffic-calibrate'])
+    parser.add_argument('stage', choices=['preflight','deploy','base','cert','panel','services','maint','verify','export','provider-info','provider-proof','reinstall','bootstrap','init','backup','cert-sync','cert-dry-run','restore-check','network','rotate-subscriptions','restore','surge','rules','traffic-calibrate','ask-secrets'])
     parser.add_argument('--network-backend',choices=['docker','native'],help='Network probe backend (default: docker)')
     parser.add_argument('--core-bin',help='Verified private native core; requires network --network-backend native')
     parser.add_argument('--archive')
@@ -738,6 +816,7 @@ def main():
     parser.add_argument('--used-gb',type=float,help='traffic-calibrate only: GiB already used this period per the provider panel')
     parser.add_argument('--password-file'); parser.add_argument('--ask-password',action='store_true')
     parser.add_argument('--os-template'); parser.add_argument('--confirm-target'); parser.add_argument('--output')
+    parser.add_argument('--secret',choices=['password','api-key','all'],help='ask-secrets only: which secret to enter in a local hidden-input dialog (default: all)')
     parser.add_argument('--discard-existing-data',action='store_true',help='reinstall only: skip the backup requirement because the owner accepts losing all data')
     args = parser.parse_args()
     if (args.network_backend is not None or args.core_bin is not None) and args.stage != 'network':
@@ -754,7 +833,11 @@ def main():
     if (args.used_gb is not None) != (args.stage == 'traffic-calibrate'): parser.error('traffic-calibrate requires --used-gb, and only it accepts it')
     if args.used_gb is not None and not 0 <= args.used_gb <= 1_000_000: parser.error('--used-gb must be between 0 and 1000000')
     if args.discard_existing_data and args.stage != 'reinstall': parser.error('--discard-existing-data applies only to reinstall')
-    path = secure_path(args.state); s = private_json(path); validate(s)
+    if args.secret and args.stage != 'ask-secrets': parser.error('--secret applies only to ask-secrets')
+    path = secure_path(args.state); s = private_json(path)
+    if args.stage == 'ask-secrets':
+        ask_secrets(s, path, args.secret or 'all'); return
+    validate(s)
     global CURRENT_STATE_PATH, CURRENT_STAGE
     CURRENT_STATE_PATH, CURRENT_STAGE = path, args.stage
     if args.stage == 'preflight': preflight(s, path)

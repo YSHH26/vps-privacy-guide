@@ -4,7 +4,7 @@
 
 ## 1. 准备本机目标文件
 
-你的电脑上要有 Python 3.9 或更高版本（二维码库对 Python 版本另有要求，见 requirements-local.txt）、OpenSSH、curl，再加上 SSH 密钥或服务商给的初始密码。先看 [服务器准备](buy-vps.md)，确认 SSH 别名连的是你要的那个公网 IP，用户是 root。密码、私钥和 API Key 不要写在命令参数里。按 README 把它们发给 AI 时，AI 会写进 private/，之后不在聊天里再显示。
+你的电脑上要有 Python 3.9 或更高版本（二维码库对 Python 版本另有要求，见 requirements-local.txt）、OpenSSH、curl，再加上 SSH 密钥或服务商给的初始密码。先看 [服务器准备](buy-vps.md)，确认 SSH 别名连的是你要的那个公网 IP，用户是 root。密码、私钥和 API Key 不要写在命令参数里，也不要发到聊天里。用下面的 `ask-secrets` 弹窗输入，或者自己用编辑器写进 private/。
 
 用初始密码接入时，可以用 `init --password-file` 或 `init --ask-password`，这需要本机装了 `sshpass`。已经有密钥的，直接用 `init` 建一个专用的登录方式。两种方式都会先核对 SSH 主机公钥是不是可信的，碰到不认识的指纹不会自动接受。具体怎么准备见 [首次接入步骤](pilot.md)。
 
@@ -42,13 +42,21 @@ python3 scripts/vps.py --help
 
 SSH 别名要指向同一个 IP，并且用 root 登录。不是 root 的话，要先安排好管理权限，否则脚本会拒绝这个目标。目标文件里存的是 SSH 别名、预期 IP、证书身份这类部署资料；服务商的凭据只放在权限受限的私有文件里。用本地编辑器填写，别把带密钥的内容打印到聊天或共享日志里。有哪些字段，以脚本帮助和状态文件校验时的提示为准。
 
+root 密码和搬瓦工 API Key 可以用弹窗输入，不用自己建文件：
+
+```sh
+python3 scripts/vps.py --state private/target.json ask-secrets
+```
+
+它会依次弹出两个隐藏输入的框（目标文件里没有 `veid` 时只问密码），把密码写进 `private/initial-password`，把 API Key 和 VEID 写进 `private/provider.json`，权限都是 600，然后在目标文件里记下这两个路径。只想填其中一个，加 `--secret password` 或 `--secret api-key`。Mac 用系统自带的对话框，Linux 要有图形界面，并装了 zenity、kdialog 或 tkinter 之一。这几种都没有、又不在终端里时，它会停下并提示你用编辑器手动写文件。弹窗在 Mac 和 Linux 桌面上都还未测试。
+
 第一次用密码接入时，先在目标文件里配好 `known_hosts_file`，里面的主机公钥要通过可信渠道核对过，再运行下面的命令。密码文件和目标文件都放在权限 700 的目录里，文件本身权限 600。确认新生成的独立密钥能连上以后，脚本才会删掉密码文件，你现有的 SSH 别名不会被改：
 
 ```sh
 python3 scripts/vps.py --state private/target.json init --password-file private/initial-password
 ```
 
-已经有能用的密钥，就不用加 `--password-file`。别拿没核对过的 `ssh-keyscan` 输出当可信主机信息。
+用过 `ask-secrets` 的话，目标文件里已经记了密码文件，直接运行 `init` 就行，不用加 `--password-file`。已经有能用的密钥，也不用加。别拿没核对过的 `ssh-keyscan` 输出当可信主机信息。
 
 ## 2. 先只看不改，确认目标
 

@@ -472,5 +472,44 @@ class OrchestratorTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as error:vps.main()
                 self.assertEqual(error.exception.code,2)
 
+    def test_ask_secrets_writes_private_files_without_printing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);state=root/'target.json'
+            s={'ssh_alias':'bwg','ip':'192.0.2.1','veid':'1234567'};vps.save(state,s)
+            answers=iter(['root-secret','api-secret'])
+            out=io.StringIO()
+            with patch.object(vps,'ask_secret',side_effect=lambda kind:next(answers)),patch('sys.stdout',out):
+                vps.ask_secrets(s,state,'all')
+            saved=json.loads(state.read_text())
+            password=Path(saved['initial_password_file']);provider=Path(saved['provider_file'])
+            self.assertEqual(password.read_text(),'root-secret\n')
+            self.assertEqual(json.loads(provider.read_text()),{'veid':'1234567','api_key':'api-secret'})
+            for p in (password,provider,state):self.assertEqual(p.stat().st_mode&0o777,0o600)
+            self.assertNotIn('secret',out.getvalue())
+            self.assertNotIn('secret',state.read_text())
+
+    def test_ask_secrets_skips_api_key_without_veid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);state=root/'target.json'
+            s={'ssh_alias':'bwg','ip':'192.0.2.1'};vps.save(state,s)
+            with patch.object(vps,'ask_secret',return_value='pw') as ask,patch('sys.stdout',io.StringIO()):
+                vps.ask_secrets(s,state,'all')
+            ask.assert_called_once_with('password')
+            self.assertNotIn('provider_file',json.loads(state.read_text()))
+            with self.assertRaisesRegex(ValueError,'veid'):vps.ask_secrets(s,state,'api-key')
+
+    def test_ask_secret_uses_dialog_stdout_and_rejects_cancel(self):
+        ok=subprocess.CompletedProcess([],0,'typed-value\n','')
+        with patch.object(vps,'_dialog_commands',return_value=[['dialog']]),patch.object(vps.subprocess,'run',return_value=ok) as run:
+            self.assertEqual(vps.ask_secret('password'),'typed-value')
+        self.assertNotIn('typed-value',' '.join(run.call_args.args[0]))
+        cancel=subprocess.CompletedProcess([],1,'','')
+        with patch.object(vps,'_dialog_commands',return_value=[['dialog']]),patch.object(vps.subprocess,'run',return_value=cancel):
+            with self.assertRaisesRegex(ValueError,'取消'):vps.ask_secret('password')
+
+    def test_ask_secret_without_any_dialog_points_to_file(self):
+        with patch.object(vps,'_dialog_commands',return_value=[]),patch.object(vps,'_tk_dialog',return_value=None),patch.object(vps.sys.stdin,'isatty',return_value=False):
+            with self.assertRaisesRegex(ValueError,'private 文件'):vps.ask_secret('api-key')
+
 
 if __name__=='__main__': unittest.main()
