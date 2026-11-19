@@ -70,7 +70,7 @@ https://github.com/YSHH26/vps-privacy-guide
 
 要改的地方：
 
-- **IP、端口、密码**：从服务商后台复制过来。搬瓦工的在 KiwiVM 后台首页。
+- **IP、端口、密码**：从服务商后台复制过来。搬瓦工的 IP 和 SSH 端口在 KiwiVM 后台首页，root 密码是重装系统后页面上显示的那个。
 - **名字**：比如写 `bwg`，以后输入 `ssh bwg` 就能登录服务器。
 - **VEID 和 API Key**：在 KiwiVM 左侧菜单的「API」页。填了以后，客户端显示的流量会跟后台一致。不是搬瓦工的，删掉这两行。
 
