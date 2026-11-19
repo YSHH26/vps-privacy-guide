@@ -1,18 +1,18 @@
 # 不使用面板
 
-可以独立运行 sing-box，不必安装 S-UI。此模式使用 [server.json](../examples/server.json)，管理方式是编辑配置和使用 systemd。部署目标仍需 SSH、可信证书、三组节点凭据及防火墙设置。
+你也可以不装 S-UI，直接单独跑 sing-box。这种方式用的是 [server.json](../examples/server.json)，靠手动改配置和 systemd 来管理。服务器还是需要 SSH、可信证书、三组节点凭据和防火墙设置。
 
 ## 与面板模式二选一
 
-如果已有 S-UI，先备份并决定是否迁移；不要直接覆盖其数据库或启动另一个核心抢占端口。S-UI 的用户、TLS 和节点对象不是完整的 sing-box JSON，需要导出或重新整理。
+已经装了 S-UI 的话，先备份，再决定要不要迁过来。别直接覆盖它的数据库，也别另起一个 sing-box 去抢它的端口。S-UI 里的用户、TLS 和节点设置不是一份完整的 sing-box JSON，要导出来或者重新整理。
 
 ## 配置准备
 
-1. 根据 [官方安装说明](https://sing-box.sagernet.org/installation/package-manager/) 安装与 [versions.json](../versions.json) 对应的核心。
-2. 将 `examples/server.json` 复制到被 Git 忽略的 `private/server.json`；文件权限设为 600。
-3. 为 AnyTLS 生成独立随机密码；为 VLESS TLS 与 Reality 生成同一用户 UUID，并生成 Reality 密钥对、short ID。
-4. 替换全部 `__占位符__`，证书路径填写核心进程能读取的真实路径，Reality 目标按 [TLS 文档](tls.md) 选择。
-5. 配对填写 `private/client.json`，客户端只放公钥，不放服务端私钥。
+1. 照 [官方安装说明](https://sing-box.sagernet.org/installation/package-manager/) 装好 [versions.json](../versions.json) 里对应版本的 sing-box。
+2. 把 `examples/server.json` 复制成 `private/server.json`（这个目录不会进 Git），权限设成 600。
+3. 给 AnyTLS 生成一个单独的随机密码；给 VLESS TLS 和 Reality 生成同一个用户 UUID，再生成 Reality 的密钥对和 short ID。
+4. 把所有 `__占位符__` 都换掉。证书路径填 sing-box 进程能读到的真实路径，Reality 的目标照 [TLS 文档](tls.md) 来选。
+5. 对应着填好 `private/client.json`。客户端里只放公钥，别放服务端私钥。
 
 ```sh
 umask 077
@@ -22,7 +22,7 @@ cp examples/client.json private/client.json
 chmod 600 private/server.json private/client.json
 ```
 
-以上 `cp` 仅用于首次创建，已有私有配置时不要重复覆盖。使用本地编辑器填入凭据，避免在共享终端记录或聊天中显示。
+上面的 `cp` 只在第一次创建时用，已经有私有配置了就别再覆盖。凭据用本地编辑器填，别让它出现在共享终端的记录或聊天里。
 
 ## 校验和运行
 
@@ -30,7 +30,7 @@ chmod 600 private/server.json private/client.json
 sing-box check -c private/server.json
 ```
 
-通过后，将配置安装到包管理器服务使用的位置。先用 `systemctl cat sing-box` 核对该发行版实际 `ExecStart` 和配置路径，再安装；常见位置为 `/etc/sing-box/config.json`。
+检查通过后，把配置装到服务实际读取的位置。先用 `systemctl cat sing-box` 看一下你这个发行版的 `ExecStart` 和配置路径，再安装；一般是 `/etc/sing-box/config.json`。
 
 ```sh
 sudo install -d -m 700 /etc/sing-box
@@ -39,8 +39,8 @@ sudo systemctl enable --now sing-box
 sudo systemctl status sing-box --no-pager
 ```
 
-上面假设服务读取该路径且这是首次安装。已有服务应先备份，修改后执行 `systemctl restart sing-box`；`enable --now` 不会让已运行进程自动加载新配置。证书文件必须对服务实际运行用户可读，不能为省事把私钥设成全员可读。
+上面假设服务读的就是这个路径，而且是第一次安装。已经在跑的服务要先备份，改完执行 `systemctl restart sing-box`；`enable --now` 不会让已经在跑的进程重新加载配置。证书文件要让服务实际的运行用户能读到，别图省事把私钥设成所有人可读。
 
-## 维护差异
+## 和面板模式在维护上的区别
 
-没有网页后台、配额自动停用和订阅生成服务。增加用户需要修改配置；证书续期后要让 sing-box 加载新文件。备份配置、密钥和证书到仓库之外，并完成与面板模式同样的三协议端到端验收。
+没有网页后台，没有流量用完自动停用，也没有订阅生成服务。加用户要改配置；证书续期以后要让 sing-box 重新加载新文件。配置、密钥和证书都要备份到仓库以外的地方，三个协议也要像面板模式一样，从头到尾实际连一遍。
