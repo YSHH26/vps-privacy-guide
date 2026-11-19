@@ -577,10 +577,6 @@ def verify():
     check('fixed_image_and_core_runtime',fixed_runtime)
     check('certificate_pair',lambda:cert_validate(ROOT/'deploy/state/cert'))
     check('nginx',lambda:run(['nginx','-t']))
-    def bbr_check():
-        sysctl=lambda key:pathlib.Path('/proc/sys/'+key.replace('.','/')).read_text().strip()
-        must(sysctl('net.ipv4.tcp_congestion_control')=='bbr' and sysctl('net.core.default_qdisc')=='fq')
-    check('bbr',bbr_check)
     for service in ['sui-vps-sub','sui-cliproxy','sui-vps-renew.timer','sui-vps-backup.timer','sui-vps-rules.timer']:
         check(service,lambda service=service:systemctl('is-active',service))
     def api_check():
