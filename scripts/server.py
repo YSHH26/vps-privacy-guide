@@ -266,7 +266,7 @@ def adopt_carried_acme(s, carry=ACME_CARRY, target=ACME_CONFIG, validate=cert_va
         if not (source/'renewal/sui-vps.conf').is_file():raise RuntimeError('携带的证书缺少续期配置')
         if target.exists():shutil.rmtree(target)
         shutil.move(str(source),str(target));target.chmod(0o700)
-        print('复用换系统前保存的 IP 证书。',flush=True)
+        print('复用重装前保存的 IP 证书。',flush=True)
         return True
     except Exception as e:
         print('不复用保存的证书，改为申请新证书：'+(str(e) if isinstance(e,RuntimeError) else type(e).__name__),flush=True)

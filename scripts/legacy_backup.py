@@ -311,7 +311,7 @@ def main():
     try:
         preserve(args.state)
     except Exception:
-        print('旧实例保全失败；未批准换系统，未输出归档、凭据或命令错误内容。', file=__import__('sys').stderr)
+        print('旧实例保全失败；未批准重装，未输出归档、凭据或命令错误内容。', file=__import__('sys').stderr)
         return 1
     print('旧实例已加密保全；隔离文件恢复和 SQLite 检查通过，业务服务恢复未测试。')
     return 0
