@@ -1,6 +1,6 @@
 # 把服务器配起来
 
-整个部署都在你自己的电脑上操作：运行仓库里的入口脚本，它通过 SSH 去检查和配置 VPS。三个节点由 S-UI 面板管理，不另外单独跑 sing-box。面板、订阅和 CLIProxyAPI 都通过可信的 HTTPS 访问。日常部署不会重装系统。
+整个部署都在你自己的电脑上操作：运行仓库里的入口脚本，它通过 SSH 去检查和配置 VPS。三个节点由 S-UI 面板管理，不另外单独跑 sing-box。面板、订阅和 CLIProxyAPI 都通过可信的 HTTPS 访问。日常部署不会换系统。
 
 ## 1. 准备本机目标文件
 
@@ -86,7 +86,7 @@ python3 scripts/vps.py --state private/target.json preflight
 python3 scripts/vps.py --state private/target.json deploy
 ```
 
-刚重装好的系统，服务商的首次启动脚本可能还在后台跑 `apt-get`（搬瓦工的镜像会装 qemu guest agent 等组件），占着软件包锁。`base` 阶段会先等它跑完，最多等 15 分钟。超时就停下，让你过一会儿再重跑，不会强行打断它。
+刚换好的系统，服务商的首次启动脚本可能还在后台跑 `apt-get`（搬瓦工的镜像会装 qemu guest agent 等组件），占着软件包锁。`base` 阶段会先等它跑完，最多等 15 分钟。超时就停下，让你过一会儿再重跑，不会强行打断它。
 
 部署用的是 [固定版本清单](../versions.json) 里的版本。它会单独生成管理员、节点和订阅的凭据，存进权限受限的状态目录。哪一步失败就停在哪一步：先把原因修好，再重跑同一步，别手动跳过检查。重启 S-UI 或更新证书时，正在用的代理连接会断。
 
@@ -160,7 +160,7 @@ python3 scripts/vps.py --state private/target.json traffic-calibrate --used-gb 1
 python3 scripts/vps.py --state private/target.json restore --archive /var/backups/sui-vps/__SELECTED_BACKUP__.tar.gz --confirm-target 192.0.2.1
 ```
 
-把示例 IP 换成你的服务器公网 IP，备份路径要填服务器 `/var/backups/sui-vps/` 里真实存在的文件。恢复会中断服务，并替换这个项目的所有状态。它代替不了从零重装后的完整检查。这个命令用的也是服务器上装好的脚本，不会先上传新版本。恢复完，重新跑 `verify`、本机的 `network` 和真机客户端检查，再导出本机账号页。试着恢复和真正恢复是两步，没真正恢复过，就不能算这一项通过。
+把示例 IP 换成你的服务器公网 IP，备份路径要填服务器 `/var/backups/sui-vps/` 里真实存在的文件。恢复会中断服务，并替换这个项目的所有状态。它代替不了从零换系统后的完整检查。这个命令用的也是服务器上装好的脚本，不会先上传新版本。恢复完，重新跑 `verify`、本机的 `network` 和真机客户端检查，再导出本机账号页。试着恢复和真正恢复是两步，没真正恢复过，就不能算这一项通过。
 
 ## 6. 要手动排查面板时
 
