@@ -4,7 +4,7 @@
 
 ## 1. 准备本机目标文件
 
-你的电脑上要有 Python 3.9 或更高版本（二维码库对 Python 版本另有要求，见 requirements-local.txt）、OpenSSH、curl，再加上 SSH 密钥或服务商给的初始密码。先看 [服务器准备](buy-vps.md)，确认 SSH 别名连的是你要的那个公网 IP，用户是 root。密码、私钥和 API Key 不要写在命令参数里，也不要发到聊天里。
+你的电脑上要有 Python 3.9 或更高版本（二维码库对 Python 版本另有要求，见 requirements-local.txt）、OpenSSH、curl，再加上 SSH 密钥或服务商给的初始密码。先看 [服务器准备](buy-vps.md)，确认 SSH 别名连的是你要的那个公网 IP，用户是 root。密码、私钥和 API Key 不要写在命令参数里。按 README 把它们发给 AI 时，AI 会写进 private/，之后不在聊天里再显示。
 
 用初始密码接入时，可以用 `init --password-file` 或 `init --ask-password`，这需要本机装了 `sshpass`。已经有密钥的，直接用 `init` 建一个专用的登录方式。两种方式都会先核对 SSH 主机公钥是不是可信的，碰到不认识的指纹不会自动接受。具体怎么准备见 [首次接入步骤](pilot.md)。
 
