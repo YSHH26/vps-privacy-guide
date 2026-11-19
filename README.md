@@ -133,7 +133,7 @@ AI 会先检查服务器，再安装、配置、测试节点，最后在你电�
 
 ## 现在测到哪一步了
 
-最近一次测试在 2026-11-18：在一台全新安装系统的搬瓦工 VPS 上从头部署，服务器上的服务检查全部通过。三个节点都用固定版本的 sing-box（节点程序）连过，能打开 HTTPS 网站，出口 IP 是服务器，填错凭据会被拒绝。Clash 订阅用固定版本的 Mihomo 加载过，Shadowrocket 订阅能正常下载。之后又换了一次全新系统再部署，直接用上了之前保存的证书。Surge Mac 6.5.0 的 AnyTLS 节点在更早的一轮里测过。
+最近一次测试在 2026-11-18：在一台搬瓦工 VPS 上重装系统、从头部署，服务器上的服务检查全部通过。三个节点都用固定版本的 sing-box（节点程序）连过，能打开 HTTPS 网站，出口 IP 是服务器，填错凭据会被拒绝。Clash 订阅用固定版本的 Mihomo 加载过，Shadowrocket 订阅能正常下载。之后又重装了一次系统，部署直接用上了重装前保存的证书。Surge Mac 6.5.0 的 AnyTLS 节点在更早的一轮里测过。
 
 **还没测**：Clash Verge Rev、OpenClash、Shadowrocket、v2rayN、v2rayNG 的真机使用，以及整台设备的 DNS、IPv6、WebRTC 和断线检查。怎么测、测出了什么，都记在 [检查清单与验证记录](docs/verification.md) 里。
 
@@ -148,13 +148,13 @@ AI 会先检查服务器，再安装、配置、测试节点，最后在你电�
 | --- | --- |
 | [买服务器前看这几件事](docs/buy-vps.md) | 选服务器、开通后要记下什么 |
 | [把服务器配起来](docs/deployment.md) | 部署入口每一步做什么、出错怎么办 |
-| [从零部署检查](docs/pilot.md) | 首次接入、换新系统、主机身份核验 |
+| [从零部署检查](docs/pilot.md) | 首次接入、重装系统、主机身份核验 |
 | [TLS、IP 证书与 Reality](docs/tls.md) | 证书怎么签、怎么续期，Reality 怎么回落 |
 | [把手机和电脑连上](docs/clients.md) | 各客户端导入、分流规则、出门前检查 |
 | [连上以后，看看有没有漏 IP](docs/leak-protection.md) | DNS、IPv6、WebRTC、断线逐项检查 |
 | [WebRTC 泄露怎么修](docs/webrtc.md) | 只开系统代理会漏的原因和修法 |
 | [维护说明](docs/maintenance.md) | 日常查看、备份恢复、更新 |
-| [用提供商 API 核验主机](docs/provider-api.md) | 换系统前后怎么确认是同一台机器 |
+| [用提供商 API 核验主机](docs/provider-api.md) | 重装前后怎么确认是同一台机器 |
 | [不使用面板](docs/standalone.md) | 自己运行裸 sing-box 的写法 |
 | [检查清单与验证记录](docs/verification.md) | 每一层检查的方法和实测结果 |
 
