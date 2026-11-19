@@ -14,7 +14,7 @@
 4. 面板模式下，配置以 S-UI 为准。examples/ 里是原生 sing-box 格式，不能导入 S-UI。没核实过，别直接写数据库，也别猜 API。
 5. 面板和订阅后端只在服务器本机监听，公网通过 Nginx 的 TCP 9443 提供可信 HTTPS。面板用单独生成的随机管理员账号。节点默认开 TCP 443、2443、8443，默认不开 UDP 443。用 IP 证书时证书验证照样开着，不能为了绕过报错就设 insecure=true。
 6. 更新前先备份，记下旧镜像的摘要。重启会断开连接，实际部署时要跟用户说清楚。别默认跟 latest，也别让 sing-box 无人值守地自动升级。
-7. 日常操作都用 `python3 scripts/vps.py --state private/target.json` 的 preflight、deploy、verify、export。重装系统要用单独的命令，先核对服务商那边的实例和 SSH、IP 对得上，并且要有用户对这台机器的明确授权。最后从零验证时必须真的重装系统，删容器不算。
+7. 日常操作都用 `python3 scripts/vps.py --state private/target.json` 的 preflight、deploy、verify、export。按 README 部署时，用户已经自己在服务商后台重装好系统，不要再用 API 重装。用户明确要求重装时，才用单独的重装命令，先核对服务商那边的实例和 SSH、IP 对得上，并且要有用户对这台机器的明确授权。最后从零验证时必须真的重装系统，删容器不算。
 8. CLIProxyAPI 的后端只在本机监听，通过 TCP 9444 的 HTTPS 提供 /management.html 管理页和 /v1 API，不预先填任何上游账号。账号页 HTML 只写到本机私有目录，不能放到公网上，也不能用第三方的二维码服务。
 9. 跑 tests/ 和检查清单。静态检查、sing-box 配置解析、容器健康、端到端网络测试是不同的层，哪一层真做完了，才能说哪一层通过。
 
