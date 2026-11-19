@@ -282,10 +282,15 @@ def provider_proof(s,state_path):
     reply = api(s,'basicShell/exec',command=command)
     boot,key = proof_message(reply.get('message'),nonce)
     pending = bool(s.get('reinstall_pending'))
+    # First contact with a brand-new server: no dedicated key exists yet, so the official HTTPS API is the only
+    # trusted source of the host key. This proof only feeds `init`; it never grants reinstall capabilities.
+    first_access = not pending and not s.get('identity_file') and not s.get('bootstrap_boot_id')
     if pending:
         require_provider_readiness(s)
         if not s.get('reinstall_at') or boot == s.get('pre_reinstall_boot_id'):
             raise ValueError('Reinstalled provider proof must show a new boot identity')
+    elif first_access:
+        pass
     else:
         observed = ssh(s,command,text=True).stdout
         if proof_message(observed,nonce) != (boot,key):
@@ -298,6 +303,11 @@ def provider_proof(s,state_path):
     proof_path = state_path.parent/'provider-proof.json'
     save(proof_path,proof)
     updated = dict(s);updated['bootstrap_proof_file'] = str(proof_path)
+    if first_access:
+        save(state_path,updated)
+        save(state_path.parent/'available-os.json',available)
+        print('First-access host key read from the official provider API; run init next.')
+        return
     if not pending:
         updated['provider_capabilities'] = {'contract_kind':'verified-provider-api','source':API_ORIGIN,
             'target_sha256':target_hash,'checked_at':now,'trusted_ssh_baseline':True,

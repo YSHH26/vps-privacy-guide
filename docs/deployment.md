@@ -50,6 +50,14 @@ python3 scripts/vps.py --state private/target.json ask-secrets
 
 它会依次弹出两个隐藏输入的框（目标文件里没有 `veid` 时只问密码），把密码写进 `private/initial-password`，把 API Key 和 VEID 写进 `private/provider.json`，权限都是 600，然后在目标文件里记下这两个路径。只想填其中一个，加 `--secret password` 或 `--secret api-key`。Mac 用系统自带的对话框，Linux 要有图形界面，并装了 zenity、kdialog 或 tkinter 之一。这几种都没有、又不在终端里时，它会停下并提示你用编辑器手动写文件。弹窗在 Mac 和 Linux 桌面上都还未测试。
 
+用搬瓦工、填了 `veid` 和 API Key 的话，第一次接入不用自己找主机公钥：
+
+```sh
+python3 scripts/vps.py --state private/target.json provider-proof
+```
+
+还没有部署专用密钥时，这条命令只通过搬瓦工的官方 HTTPS API 读出服务器的 boot ID 和 SSH 主机公钥，存成 15 分钟内有效的证明，接着运行 `init` 就行。这份证明只用来第一次接入，不能拿来重装。新开通的搬瓦工服务器不是 Ubuntu 时，AI 会在 `init` 之后按 AGENTS.md 自动换成 Ubuntu 24.04，前提是服务器上没有任何已有业务。这条路径在非 Ubuntu 的新服务器上还未测试。
+
 第一次用密码接入时，先在目标文件里配好 `known_hosts_file`，里面的主机公钥要通过可信渠道核对过，再运行下面的命令。密码文件和目标文件都放在权限 700 的目录里，文件本身权限 600。确认新生成的独立密钥能连上以后，脚本才会删掉密码文件，你现有的 SSH 别名不会被改：
 
 ```sh

@@ -362,7 +362,7 @@ class OrchestratorTests(unittest.TestCase):
     def test_provider_proof_requires_nonce_and_matches_trusted_old_ssh(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);root.chmod(0o700);state=root/'target.json'
-            s={'ip':'192.0.2.1','veid':1,'ssh_alias':'my-vps'}
+            s={'ip':'192.0.2.1','veid':1,'ssh_alias':'my-vps','identity_file':str(root/'key')}
             message='sui-provider-proof-v1:'+'a'*48+'\n12345678-1234-1234-1234-123456789abc\nssh-ed25519 AAAATEST root@host\n'
             responses={'getServiceInfo':{'ip_addresses':[s['ip']],'vm_type':'kvm'},
                        'getLiveServiceInfo':{'ip_addresses':[s['ip']],'ve_status':'running','ssh_port':2222},
@@ -382,6 +382,28 @@ class OrchestratorTests(unittest.TestCase):
             with patch.object(vps,'api',side_effect=api),patch.object(vps.secrets,'token_hex',return_value='a'*48),patch.object(vps,'ssh'):
                 with self.assertRaises(ValueError):vps.provider_proof(s,state)
             self.assertEqual(state.read_bytes(),original)
+
+    def test_first_access_proof_uses_api_only_and_feeds_init(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);state=root/'target.json'
+            s={'ip':'192.0.2.1','veid':1,'ssh_alias':'my-vps'}
+            message='sui-provider-proof-v1:'+'a'*48+'\n12345678-1234-1234-1234-123456789abc\nssh-ed25519 AAAATEST root@host\n'
+            responses={'getServiceInfo':{'ip_addresses':[s['ip']],'vm_type':'kvm'},
+                       'getLiveServiceInfo':{'ip_addresses':[s['ip']],'ve_status':'running','ssh_port':22},
+                       'getAvailableOS':{'installed':'almalinux-9-x86_64','templates':['ubuntu-24.04-x86_64']},
+                       'getSshKeys':{'ssh_keys_preferred':''},
+                       'basicShell/exec':{'message':message}}
+            def api(state,method,**kwargs):return {'error':0,**responses[method]}
+            with patch.object(vps,'api',side_effect=api),patch.object(vps.secrets,'token_hex',return_value='a'*48),patch.object(vps,'ssh') as ssh,patch('sys.stdout',io.StringIO()):
+                vps.provider_proof(s,state)
+            ssh.assert_not_called()
+            saved=vps.private_json(state)
+            self.assertNotIn('provider_capabilities',saved)
+            trial,boot=vps.bootstrap_target(saved,state,True)
+            self.assertEqual(boot,'12345678-1234-1234-1234-123456789abc')
+            self.assertIn('ssh-ed25519 AAAATEST',Path(trial['known_hosts_file']).read_text())
+            with self.assertRaises((KeyError,ValueError)):
+                vps.reinstall(saved,state,'ubuntu-24.04-x86_64','my-vps:192.0.2.1:1',True)
 
     def test_provider_api_bootstrap_rejects_unproven_origin_and_stale_proof(self):
         with tempfile.TemporaryDirectory() as tmp:
