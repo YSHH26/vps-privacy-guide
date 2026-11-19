@@ -50,7 +50,7 @@
 
 ```text
 请按这个仓库帮我部署服务器：
-https://github.com/makerkitt/vps-privacy-guide
+https://github.com/YSHH26/vps-privacy-guide
 
 先读 AGENTS.md 和里面列出的文档，
 然后用仓库的 python3 scripts/vps.py --state private/target.json 入口操作。
@@ -143,7 +143,7 @@ docker compose -f deploy/compose.yaml config --quiet
 VALIDATE_CORE=1 python3 -m unittest discover -s tests -v
 ```
 
-最后一条需要 Docker 和 OpenSSL，会用固定版本的 sing-box 和 Mihomo 解析配置。自动检查见 [GitHub Actions](https://github.com/makerkitt/vps-privacy-guide/actions/workflows/validate.yml)。
+最后一条需要 Docker 和 OpenSSL，会用固定版本的 sing-box 和 Mihomo 解析配置。自动检查见 [GitHub Actions](https://github.com/YSHH26/vps-privacy-guide/actions/workflows/validate.yml)。
 
 </details>
 
