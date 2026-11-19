@@ -513,59 +513,137 @@ def bootstrap(s, state_path, *, initial=False, password_file=None, ask_password=
 
 
 SECRET_PROMPTS = {
-    'password': ('服务器 root 密码', '请输入服务器的 root 密码。它只会存进本机 private 文件夹，不会显示出来。'),
-    'api-key': ('搬瓦工 API Key', '请输入 KiwiVM「API」页里的 API Key。它只会存进本机 private 文件夹，不会显示出来。'),
+    'password': '服务器 root 密码',
+    'api-key': '搬瓦工 API Key（KiwiVM「API」页）',
 }
+DIALOG_TITLE = '部署需要的登录信息'
+DIALOG_MESSAGE = '填好后点「好」。内容只存进本机 private 文件夹，不会显示，也不会发给 AI。'
+FIELD_SEPARATOR = '\x1e'
+
+# One NSAlert with a hidden-input field per secret; prints a JSON list, or nothing when cancelled.
+MAC_FORM = r"""
+ObjC.import('Cocoa');
+function run(argv) {
+  const labels = JSON.parse(argv[0]);
+  const app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  const alert = $.NSAlert.alloc.init;
+  alert.messageText = argv[1];
+  alert.informativeText = argv[2];
+  alert.addButtonWithTitle('好');
+  alert.addButtonWithTitle('取消');
+  const h = labels.length * 52;
+  const view = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 320, h));
+  const fields = [];
+  labels.forEach((text, i) => {
+    const y = h - (i + 1) * 52;
+    const label = $.NSTextField.labelWithString(text);
+    label.frame = $.NSMakeRect(0, y + 28, 320, 18);
+    view.addSubview(label);
+    const field = $.NSSecureTextField.alloc.initWithFrame($.NSMakeRect(0, y + 2, 320, 24));
+    view.addSubview(field);
+    fields.push(field);
+  });
+  alert.accessoryView = view;
+  alert.window.initialFirstResponder = fields[0];
+  app.activateIgnoringOtherApps(true);
+  if (alert.runModal != $.NSAlertFirstButtonReturn) return '';
+  return JSON.stringify(fields.map(f => f.stringValue.js));
+}
+"""
 
 
-def _dialog_commands(title, message):
-    """Native hidden-input dialogs; each prints the answer on stdout only."""
-    if sys.platform == 'darwin':
-        script = ('display dialog '+json.dumps(message)+' with title '+json.dumps(title)+
-                  ' default answer "" with hidden answer buttons {"取消","好"} default button "好" cancel button "取消"\n'
-                  'text returned of result')
-        return [['osascript', '-e', script]]
-    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')): return []
-    commands = []
-    if shutil.which('zenity'): commands.append(['zenity', '--password', '--title', title])
-    if shutil.which('kdialog'): commands.append(['kdialog', '--title', title, '--password', message])
-    return commands
+class DialogCancelled(Exception):
+    pass
 
 
-def _tk_dialog(title, message):
-    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')): return None
+def _has_display():
+    return bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+
+
+def _mac_form(labels):
+    result = subprocess.run(['osascript', '-l', 'JavaScript', '-e', MAC_FORM, json.dumps(labels, ensure_ascii=False),
+                             DIALOG_TITLE, DIALOG_MESSAGE], capture_output=True, text=True, timeout=600)
+    if result.returncode != 0: return None
+    out = result.stdout.strip()
+    if not out: raise DialogCancelled
+    values = json.loads(out)
+    return values if isinstance(values, list) and len(values) == len(labels) else None
+
+
+def _zenity_form(labels):
+    command = ['zenity', '--forms', '--title', DIALOG_TITLE, '--text', DIALOG_MESSAGE, '--separator', FIELD_SEPARATOR]
+    for label in labels: command += ['--add-password', label]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+    if result.returncode == 1: raise DialogCancelled
+    if result.returncode != 0: return None
+    values = result.stdout.rstrip('\r\n').split(FIELD_SEPARATOR)
+    return values if len(values) == len(labels) else None
+
+
+def _tk_form(labels):
     try:
         import tkinter
-        from tkinter import simpledialog
-        root = tkinter.Tk(); root.withdraw()
-        try: return simpledialog.askstring(title, message, show='*', parent=root)
-        finally: root.destroy()
     except Exception:
         return None
+    try:
+        root = tkinter.Tk()
+    except Exception:
+        return None
+    answer = {}
+    try:
+        root.title(DIALOG_TITLE)
+        tkinter.Label(root, text=DIALOG_MESSAGE, wraplength=320, justify='left').pack(padx=12, pady=(12, 6), anchor='w')
+        entries = []
+        for label in labels:
+            tkinter.Label(root, text=label).pack(padx=12, anchor='w')
+            entry = tkinter.Entry(root, show='*', width=40); entry.pack(padx=12, pady=(0, 8)); entries.append(entry)
+        def ok(*_): answer['values'] = [e.get() for e in entries]; root.destroy()
+        buttons = tkinter.Frame(root); buttons.pack(pady=(0, 12))
+        tkinter.Button(buttons, text='好', command=ok).pack(side='left', padx=6)
+        tkinter.Button(buttons, text='取消', command=root.destroy).pack(side='left', padx=6)
+        root.bind('<Return>', ok); entries[0].focus_set()
+        root.attributes('-topmost', True)
+        root.mainloop()
+    except Exception:
+        return None
+    if 'values' not in answer: raise DialogCancelled
+    return answer['values']
 
 
-def ask_secret(kind):
-    title, message = SECRET_PROMPTS[kind]
-    for command in _dialog_commands(title, message):
+def _form_methods():
+    if sys.platform == 'darwin': return [_mac_form, _tk_form]
+    if not _has_display(): return []
+    methods = [_zenity_form] if shutil.which('zenity') else []
+    return methods + [_tk_form]
+
+
+def ask_secret_values(kinds):
+    """Collect every requested secret in a single dialog; values never reach stdout or argv."""
+    labels = [SECRET_PROMPTS[k] for k in kinds]
+    values = None
+    for method in _form_methods():
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=600)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if result.returncode == 0:
-            value = result.stdout.rstrip('\r\n')
-            if value: return value
-        raise ValueError('输入框被取消或内容为空，没有保存任何东西')
-    value = _tk_dialog(title, message)
-    if value is None and sys.stdin.isatty():
+            values = method(labels)
+        except DialogCancelled:
+            raise ValueError('输入框被取消，没有保存任何东西') from None
+        except (OSError, subprocess.SubprocessError, ValueError):
+            values = None
+        if values is not None: break
+    if values is None and sys.stdin.isatty():
+        values = []
         with warnings.catch_warnings():
             warnings.simplefilter('error', getpass.GetPassWarning)
-            try: value = getpass.getpass(title+'（输入时不显示）: ')
-            except getpass.GetPassWarning: value = None
-    if value is None:
-        raise ValueError('这台电脑弹不出输入框；请用编辑器把'+title+'写进权限 600 的 private 文件，见 docs/deployment.md')
-    value = value.rstrip('\r\n')
-    if not value: raise ValueError('输入内容为空，没有保存任何东西')
-    return value
+            try:
+                for label in labels: values.append(getpass.getpass(label+'（输入时不显示）: '))
+            except getpass.GetPassWarning:
+                values = None
+    if values is None:
+        raise ValueError('这台电脑弹不出输入框；请用编辑器把'+'和'.join(labels)+'写进权限 600 的 private 文件，见 docs/deployment.md')
+    values = [v.rstrip('\r\n') for v in values]
+    empty = [labels[i] for i, v in enumerate(values) if not v]
+    if empty: raise ValueError('没有填：'+'、'.join(empty)+'；没有保存任何东西')
+    return dict(zip(kinds, values))
 
 
 def ask_secrets(s, state_path, which):
@@ -574,20 +652,20 @@ def ask_secrets(s, state_path, which):
     if 'api-key' in kinds and not re.fullmatch(r'[0-9]+', str(s.get('veid', ''))):
         raise ValueError('先在目标状态里写好 veid，再输入 API Key')
     if s.get('ip'): ipaddress.IPv4Address(s['ip'])
-    for kind in kinds:
-        value = ask_secret(kind)
-        if kind == 'password':
-            target = state_path.parent/'initial-password'
-            write_private(target, (value+'\n').encode())
-            s['initial_password_file'] = str(target)
-        else:
-            if re.search(r'\s', value): raise ValueError('API Key 里不应有空格或换行')
-            target = state_path.parent/'provider.json'
-            save(target, {'veid': str(s['veid']), 'api_key': value})
-            s['provider_file'] = str(target)
-        value = None
-        save(state_path, s)
-    print('已保存到本机 private 文件夹：'+'、'.join(SECRET_PROMPTS[k][0] for k in kinds))
+    values = ask_secret_values(kinds)
+    if 'api-key' in values and re.search(r'\s', values['api-key']):
+        raise ValueError('API Key 里不应有空格或换行；没有保存任何东西')
+    if 'password' in values:
+        target = state_path.parent/'initial-password'
+        write_private(target, (values['password']+'\n').encode())
+        s['initial_password_file'] = str(target)
+    if 'api-key' in values:
+        target = state_path.parent/'provider.json'
+        save(target, {'veid': str(s['veid']), 'api_key': values['api-key']})
+        s['provider_file'] = str(target)
+    values = None
+    save(state_path, s)
+    print('已保存到本机 private 文件夹：'+'、'.join(SECRET_PROMPTS[k] for k in kinds))
 
 
 def preflight(s, path):

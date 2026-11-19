@@ -48,7 +48,7 @@ root 密码和搬瓦工 API Key 可以用弹窗输入，不用自己建文件：
 python3 scripts/vps.py --state private/target.json ask-secrets
 ```
 
-它会依次弹出两个隐藏输入的框（目标文件里没有 `veid` 时只问密码），把密码写进 `private/initial-password`，把 API Key 和 VEID 写进 `private/provider.json`，权限都是 600，然后在目标文件里记下这两个路径。只想填其中一个，加 `--secret password` 或 `--secret api-key`。Mac 用系统自带的对话框，Linux 要有图形界面，并装了 zenity、kdialog 或 tkinter 之一。这几种都没有、又不在终端里时，它会停下并提示你用编辑器手动写文件。弹窗在 Mac 和 Linux 桌面上都还未测试。
+它会弹出一个输入框，密码和 API Key 是同一个框里的两个隐藏输入栏，一次填完（目标文件里没有 `veid` 时只有密码一栏）。任何一栏没填或点了取消，什么都不保存。填好后，它把密码写进 `private/initial-password`，把 API Key 和 VEID 写进 `private/provider.json`，权限都是 600，然后在目标文件里记下这两个路径。只想填其中一个，加 `--secret password` 或 `--secret api-key`。Mac 用系统自带的对话框，Linux 要有图形界面，并装了 zenity 或 Python 的 tkinter。这几种都没有时，在终端里运行会逐项提示输入；不在终端里时，它会停下并提示你用编辑器手动写文件。弹窗在 Mac 和 Linux 桌面上都还未测试。
 
 用搬瓦工、填了 `veid` 和 API Key 的话，第一次接入不用自己找主机公钥：
 

@@ -494,14 +494,14 @@ class OrchestratorTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as error:vps.main()
                 self.assertEqual(error.exception.code,2)
 
-    def test_ask_secrets_writes_private_files_without_printing(self):
+    def test_ask_secrets_uses_one_dialog_and_writes_private_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);root.chmod(0o700);state=root/'target.json'
             s={'ssh_alias':'bwg','ip':'192.0.2.1','veid':'1234567'};vps.save(state,s)
-            answers=iter(['root-secret','api-secret'])
             out=io.StringIO()
-            with patch.object(vps,'ask_secret',side_effect=lambda kind:next(answers)),patch('sys.stdout',out):
+            with patch.object(vps,'ask_secret_values',return_value={'password':'root-secret','api-key':'api-secret'}) as ask,patch('sys.stdout',out):
                 vps.ask_secrets(s,state,'all')
+            ask.assert_called_once_with(['password','api-key'])
             saved=json.loads(state.read_text())
             password=Path(saved['initial_password_file']);provider=Path(saved['provider_file'])
             self.assertEqual(password.read_text(),'root-secret\n')
@@ -510,28 +510,50 @@ class OrchestratorTests(unittest.TestCase):
             self.assertNotIn('secret',out.getvalue())
             self.assertNotIn('secret',state.read_text())
 
-    def test_ask_secrets_skips_api_key_without_veid(self):
+    def test_ask_secrets_only_password_without_veid_and_requires_veid_for_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);root.chmod(0o700);state=root/'target.json'
             s={'ssh_alias':'bwg','ip':'192.0.2.1'};vps.save(state,s)
-            with patch.object(vps,'ask_secret',return_value='pw') as ask,patch('sys.stdout',io.StringIO()):
+            with patch.object(vps,'ask_secret_values',return_value={'password':'pw'}) as ask,patch('sys.stdout',io.StringIO()):
                 vps.ask_secrets(s,state,'all')
-            ask.assert_called_once_with('password')
+            ask.assert_called_once_with(['password'])
             self.assertNotIn('provider_file',json.loads(state.read_text()))
             with self.assertRaisesRegex(ValueError,'veid'):vps.ask_secrets(s,state,'api-key')
 
-    def test_ask_secret_uses_dialog_stdout_and_rejects_cancel(self):
-        ok=subprocess.CompletedProcess([],0,'typed-value\n','')
-        with patch.object(vps,'_dialog_commands',return_value=[['dialog']]),patch.object(vps.subprocess,'run',return_value=ok) as run:
-            self.assertEqual(vps.ask_secret('password'),'typed-value')
-        self.assertNotIn('typed-value',' '.join(run.call_args.args[0]))
-        cancel=subprocess.CompletedProcess([],1,'','')
-        with patch.object(vps,'_dialog_commands',return_value=[['dialog']]),patch.object(vps.subprocess,'run',return_value=cancel):
-            with self.assertRaisesRegex(ValueError,'取消'):vps.ask_secret('password')
+    def test_ask_secrets_saves_nothing_when_api_key_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);state=root/'target.json'
+            s={'ssh_alias':'bwg','ip':'192.0.2.1','veid':'1'};vps.save(state,s)
+            with patch.object(vps,'ask_secret_values',return_value={'password':'pw','api-key':'bad key'}):
+                with self.assertRaises(ValueError):vps.ask_secrets(s,state,'all')
+            self.assertFalse((root/'initial-password').exists());self.assertFalse((root/'provider.json').exists())
 
-    def test_ask_secret_without_any_dialog_points_to_file(self):
-        with patch.object(vps,'_dialog_commands',return_value=[]),patch.object(vps,'_tk_dialog',return_value=None),patch.object(vps.sys.stdin,'isatty',return_value=False):
-            with self.assertRaisesRegex(ValueError,'private 文件'):vps.ask_secret('api-key')
+    def test_secret_form_asks_all_fields_at_once(self):
+        calls=[]
+        def form(labels):calls.append(labels);return ['pw','key']
+        with patch.object(vps,'_form_methods',return_value=[form]):
+            self.assertEqual(vps.ask_secret_values(['password','api-key']),{'password':'pw','api-key':'key'})
+        self.assertEqual(len(calls),1);self.assertEqual(len(calls[0]),2)
 
+    def test_secret_form_cancel_empty_and_fallback(self):
+        def cancel(labels):raise vps.DialogCancelled
+        with patch.object(vps,'_form_methods',return_value=[cancel]):
+            with self.assertRaisesRegex(ValueError,'取消'):vps.ask_secret_values(['password'])
+        with patch.object(vps,'_form_methods',return_value=[lambda labels:['', 'key']]):
+            with self.assertRaisesRegex(ValueError,'root 密码'):vps.ask_secret_values(['password','api-key'])
+        broken=lambda labels:None
+        with patch.object(vps,'_form_methods',return_value=[broken,lambda labels:['pw']]):
+            self.assertEqual(vps.ask_secret_values(['password']),{'password':'pw'})
+        with patch.object(vps,'_form_methods',return_value=[]),patch.object(vps.sys.stdin,'isatty',return_value=False):
+            with self.assertRaisesRegex(ValueError,'private 文件'):vps.ask_secret_values(['api-key'])
+
+    def test_zenity_form_keeps_secrets_out_of_argv(self):
+        done=subprocess.CompletedProcess([],0,'pw\x1ekey\n','')
+        with patch.object(vps.subprocess,'run',return_value=done) as run:
+            self.assertEqual(vps._zenity_form(['a','b']),['pw','key'])
+        argv=run.call_args.args[0]
+        self.assertEqual(argv.count('--add-password'),2);self.assertNotIn('pw',argv)
+        with patch.object(vps.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','')):
+            with self.assertRaises(vps.DialogCancelled):vps._zenity_form(['a'])
 
 if __name__=='__main__': unittest.main()
