@@ -15,10 +15,22 @@
 5. 面板和订阅后端只在服务器本机监听，公网通过 Nginx 的 TCP 9443 提供可信 HTTPS。面板用单独生成的随机管理员账号。节点默认开 TCP 443、2443、8443，默认不开 UDP 443。用 IP 证书时证书验证照样开着，不能为了绕过报错就设 insecure=true。
 6. 更新前先备份，记下旧镜像的摘要。重启会断开连接，实际部署时要跟用户说清楚。别默认跟 latest，也别让 sing-box 无人值守地自动升级。
 7. 日常操作都用 `python3 scripts/vps.py --state private/target.json` 的 preflight、deploy、verify、export。
-   按 README 部署新买的服务器时，顺序是：写好 target.json 和 `~/.ssh/config` 里的别名 → 用户写的是 root 密码时，本机没有 `sshpass` 就先装上（Mac 用 Homebrew），再 `ask-secrets`；用户写的是密钥文件时，把它配进别名，用 `ssh -o BatchMode=yes` 确认能登录，不要弹窗问密码，有 VEID 时只用 `ask-secrets --secret api-key` 问 API Key，没有就完全不弹窗 → `provider-proof`（第一次接入时只从服务商 API 读主机公钥）→ `init` → `preflight`。preflight 显示系统不是 Ubuntu 22.04/24.04/26.04，并且服务器是空的（没有 Docker 容器、除 SSH 外没有在监听的业务端口、/opt 和 /srv 里没有别人的东西），就直接用 API 换成 ubuntu-24.04-x86_64：`provider-proof` → `reinstall --discard-existing-data` → 等服务器运行 → `provider-proof` → `bootstrap` → `preflight`，然后继续部署。这一步不用问用户，完成后用一句话告诉他换过系统。看到任何已有业务，或者没有 API Key，就停下来问用户。
+   按 README 部署新买的服务器时，顺序是：写好 target.json 和 `~/.ssh/config` 里的别名 → 用户写的是 root 密码时，直接 `ask-secrets`（密码登录靠 OpenSSH 8.4+ 自带的 SSH_ASKPASS，不用装 sshpass）；用户写的是密钥文件时，把它配进别名，用 `ssh -o BatchMode=yes` 确认能登录，不要弹窗问密码，有 VEID 时只用 `ask-secrets --secret api-key` 问 API Key，没有就完全不弹窗 → `provider-proof`（第一次接入时只从服务商 API 读主机公钥）→ `init` → `preflight`。preflight 显示系统不是 Ubuntu 22.04/24.04/26.04，并且服务器是空的（没有 Docker 容器、除 SSH 外没有在监听的业务端口、/opt 和 /srv 里没有别人的东西），就直接用 API 换成 ubuntu-24.04-x86_64：`provider-proof` → `reinstall --discard-existing-data` → 等服务器运行 → `provider-proof` → `bootstrap` → `preflight`，然后继续部署。这一步不用问用户，完成后用一句话告诉他换过系统。看到任何已有业务，或者没有 API Key，就停下来问用户。
    其他情况下，用户明确要求重装时，才用单独的重装命令，先核对服务商那边的实例和 SSH、IP 对得上，并且要有用户对这台机器的明确授权。最后从零验证时必须真的重装系统，删容器不算。
 8. CLIProxyAPI 的后端只在本机监听，通过 TCP 9444 的 HTTPS 提供 /management.html 管理页和 /v1 API，不预先填任何上游账号。账号页 HTML 只写到本机私有目录，不能放到公网上，也不能用第三方的二维码服务。
 9. 跑 tests/ 和检查清单。静态检查、sing-box 配置解析、容器健康、端到端网络测试是不同的层，哪一层真做完了，才能说哪一层通过。
+
+## 用户的电脑是 Windows 时
+
+部署脚本在用户自己的电脑上运行，Windows 也一样，服务器照样是 Ubuntu。下面这些由你自己检查、自己装，不要让用户判断或手动安装，也不要建议用户装 WSL（用户已经在 WSL 里就照常用）：
+
+1. `python --version` 要 3.9 以上。没有就运行 `winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements`。
+2. `ssh -V` 要 OpenSSH 8.4 以上。Windows 10 自带的是 8.1，不够用密码登录。不够就运行 `winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements`，然后把 `C:\Program Files\Git\usr\bin` 放到 PATH 最前面，再确认 `ssh -V`。
+3. winget 可能弹出"是否允许"，提前告诉用户点"是"。没有 winget 时，请用户从官网下载安装，一路默认。
+4. 仓库放在用户自己的目录下（比如 `C:\Users\用户名\vps-privacy-guide`），不要放在 OneDrive 同步的文件夹里。脚本会用 icacls 把 private 文件夹设成只有当前用户能访问。
+5. 密码和 API Key 的弹窗是 PowerShell 窗口，弹之前告诉用户"马上会弹出一个输入框"。
+
+Windows 这条路径还未测试，遇到问题如实告诉用户卡在哪一步。
 
 ## 改仓库时
 

@@ -29,6 +29,19 @@ API_METHODS = {'getServiceInfo', 'getLiveServiceInfo', 'getAvailableOS', 'getSsh
 OWNER_MARK = '/opt/sui-vps/.managed'
 
 
+WINDOWS = os.name == 'nt'
+NULL_DEVICE = os.devnull  # 'nul' on Windows, '/dev/null' elsewhere
+
+
+def restrict_windows(path):
+    """Windows has no Unix modes: strip inherited ACLs and grant only the current user (OpenSSH demands this for keys)."""
+    if not WINDOWS: return
+    path = Path(path)
+    grant = getpass.getuser()+(':(OI)(CI)F' if path.is_dir() else ':F')
+    result = subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', grant], capture_output=True)
+    if result.returncode != 0: raise ValueError('Could not restrict Windows permissions on a private path')
+
+
 def secure_path(path, exists=True):
     path = Path(path).expanduser().absolute()
     # Reject symlinks anywhere, including an ancestor. Files live beneath a private parent.
@@ -36,6 +49,16 @@ def secure_path(path, exists=True):
         if part.is_symlink() and str(part) not in {'/var', '/tmp', '/etc'}:
             raise ValueError('Private paths must not contain symlinks')
     parent = path.parent
+    if WINDOWS:
+        # Unix mode/owner bits are meaningless on NTFS; enforce owner-only ACLs instead.
+        if not parent.is_dir(): raise ValueError('Private parent directory is missing')
+        restrict_windows(parent)
+        if exists:
+            if not path.is_file(): raise ValueError('Private file is missing')
+            restrict_windows(path)
+        elif path.exists():
+            secure_path(path)
+        return path
     if not parent.is_dir() or parent.stat().st_mode & 0o077:
         raise ValueError('Private parent directory must have mode 700')
     if parent.stat().st_uid != os.getuid(): raise ValueError('Private directory ownership mismatch')
@@ -54,13 +77,15 @@ def private_json(path):
 
 def write_private(path, data):
     path = Path(path).expanduser().absolute()
-    if not path.parent.exists(): path.parent.mkdir(parents=True, mode=0o700)
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, mode=0o700); restrict_windows(path.parent)
     path = secure_path(path, exists=False)
     fd, tmp = tempfile.mkstemp(prefix='.'+path.name+'-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as f:
             f.write(data); f.flush(); os.fsync(f.fileno())
         os.replace(tmp, path)
+        restrict_windows(path)
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
 
@@ -98,13 +123,13 @@ def ssh_args(s, *, password=False):
     args = ['ssh']
     if password or s.get('_isolated_auth'):
         # Authentication proof must not silently fall back to another configured key/agent.
-        args += ['-F', '/dev/null', '-l', 'root']
+        args += ['-F', NULL_DEVICE, '-l', 'root']
     args += ['-o', 'BatchMode='+('no' if password else 'yes'),
              '-o', 'StrictHostKeyChecking=yes', '-o', 'CheckHostIP=yes',
              '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20']
     if s.get('known_hosts_file'):
         known = secure_path(s['known_hosts_file'])
-        args += ['-o', 'UserKnownHostsFile='+str(known), '-o', 'GlobalKnownHostsFile=/dev/null']
+        args += ['-o', 'UserKnownHostsFile='+str(known), '-o', 'GlobalKnownHostsFile='+NULL_DEVICE]
     elif password or s.get('_isolated_auth'):
         raise ValueError('Bootstrap requires an explicit trusted known_hosts file')
     if s.get('ssh_port'): args += ['-p', str(s['ssh_port'])]
@@ -122,21 +147,54 @@ def ssh(s, command, **kwargs):
     return run(ssh_args(s)+[command], **kwargs)
 
 
+def openssh_version():
+    try: out = subprocess.run(['ssh', '-V'], capture_output=True, text=True).stderr
+    except OSError: return None
+    m = re.search(r'OpenSSH_(?:for_Windows_)?(\d+)\.(\d+)', out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _askpass_script(directory, password_file):
+    """A helper OpenSSH runs to read the password; it only prints the private password file."""
+    ssh_path = (shutil.which('ssh') or '').lower()
+    if WINDOWS and 'system32' in ssh_path:
+        # Win32-OpenSSH starts the helper with CreateProcess, so it must be a .cmd file.
+        script = directory/'askpass.cmd'
+        script.write_text('@echo off\r\ntype "%SUI_PW_FILE%"\r\n')
+    else:
+        # macOS, Linux, and Git-for-Windows (MSYS) ssh all run a POSIX shell script.
+        script = directory/'askpass.sh'
+        script.write_text('#!/bin/sh\ncat "$SUI_PW_FILE"\n')
+        script.chmod(0o700)
+    restrict_windows(script)
+    return script
+
+
 def password_ssh(s, command, password, **kwargs):
-    if not shutil.which('sshpass'):
-        raise ValueError('Install sshpass locally for password bootstrap, or use an existing SSH key')
     if not password or '\n' in password or '\r' in password or '\0' in password or len(password.encode()) > 4096:
         raise ValueError('Password must be a nonempty single line of at most 4096 bytes')
+    version = openssh_version()
+    if not version or version < (8, 4):
+        raise ValueError('Password login needs OpenSSH 8.4 or newer on this computer (ssh -V); on Windows install Git for Windows and use its ssh')
     args = ssh_args(s, password=True)+[command]
-    read_fd, write_fd = os.pipe()
+    # SSH_ASKPASS_REQUIRE=force (OpenSSH 8.4+) replaces sshpass: the password sits only in a private temp file.
+    base = Path(s['known_hosts_file']).parent
+    directory = Path(tempfile.mkdtemp(prefix='.askpass-', dir=base))
     try:
-        os.write(write_fd, password.encode()+b'\n'); os.close(write_fd); write_fd = None
+        restrict_windows(directory)
+        password_file = directory/'pw'
+        fd = os.open(password_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f: f.write(password+'\n')
+        restrict_windows(password_file)
+        script = _askpass_script(directory, password_file)
+        env = {k:v for k,v in os.environ.items() if k not in {'SSHPASS','SSH_ASKPASS','SSH_ASKPASS_REQUIRE'}}
+        env.update(SSH_ASKPASS=str(script), SSH_ASKPASS_REQUIRE='force', SUI_PW_FILE=str(password_file))
+        env.setdefault('DISPLAY', 'none')
         kwargs.setdefault('capture_output', True)
-        return run(['sshpass', '-d', str(read_fd), *args], pass_fds=(read_fd,),
-                   env={k:v for k,v in os.environ.items() if k != 'SSHPASS'}, **kwargs)
+        if 'input' not in kwargs: kwargs.setdefault('stdin', subprocess.DEVNULL)
+        return run(args, env=env, **kwargs)
     finally:
-        os.close(read_fd)
-        if write_fd is not None: os.close(write_fd)
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def dedicated_key(s, state_path):
@@ -145,16 +203,16 @@ def dedicated_key(s, state_path):
     else:
         directory = state_path.parent/'ssh'
         if directory.is_symlink(): raise ValueError('Key directory must not be a symlink')
-        directory.mkdir(mode=0o700, exist_ok=True)
-        if directory.stat().st_mode & 0o077: raise ValueError('Key directory must have mode 700')
+        directory.mkdir(mode=0o700, exist_ok=True); restrict_windows(directory)
+        if not WINDOWS and directory.stat().st_mode & 0o077: raise ValueError('Key directory must have mode 700')
         key = secure_path(directory/'id_ed25519', exists=False)
         if not key.exists():
             if key.with_suffix('.pub').exists() or key.with_suffix('.pub').is_symlink():
                 raise ValueError('Public key path already exists without its private key')
             run(['ssh-keygen','-q','-t','ed25519','-N','','-C','sui-vps-local','-f',str(key)], capture_output=True)
-            key.chmod(0o600)
+            key.chmod(0o600); restrict_windows(key)
             public = key.with_suffix('.pub')
-            if public.exists(): public.chmod(0o600)
+            if public.exists(): public.chmod(0o600); restrict_windows(public)
     public = ' '.join(run(['ssh-keygen','-y','-f',str(key)], capture_output=True, text=True).stdout.split()[:2])
     if not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,3}',public):
         raise ValueError('Invalid local SSH public key')
@@ -553,6 +611,30 @@ function run(argv) {
 """
 
 
+# WinForms dialog with one masked TextBox per secret. Labels arrive via env (never argv); exit 1 means cancelled.
+WINDOWS_FORM = r"""
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$labels = ConvertFrom-Json $env:SUI_FORM_LABELS
+$h = 110 + 52 * $labels.Count
+$f = New-Object Windows.Forms.Form -Property @{ Text = $env:SUI_FORM_TITLE; Width = 440; Height = $h; StartPosition = 'CenterScreen'; TopMost = $true; FormBorderStyle = 'FixedDialog'; MaximizeBox = $false; MinimizeBox = $false }
+$msg = New-Object Windows.Forms.Label -Property @{ Text = $env:SUI_FORM_MESSAGE; Left = 12; Top = 10; Width = 400; Height = 34 }
+$f.Controls.Add($msg)
+$boxes = @()
+$y = 48
+foreach ($text in $labels) {
+  $l = New-Object Windows.Forms.Label -Property @{ Text = $text; Left = 12; Top = $y; Width = 400 }
+  $t = New-Object Windows.Forms.TextBox -Property @{ Left = 12; Top = ($y + 22); Width = 400; UseSystemPasswordChar = $true }
+  $f.Controls.Add($l); $f.Controls.Add($t); $boxes += $t; $y += 52
+}
+$ok = New-Object Windows.Forms.Button -Property @{ Text = '好'; Left = 256; Top = $y + 4; Width = 75; DialogResult = 'OK' }
+$no = New-Object Windows.Forms.Button -Property @{ Text = '取消'; Left = 337; Top = $y + 4; Width = 75; DialogResult = 'Cancel' }
+$f.Controls.Add($ok); $f.Controls.Add($no); $f.AcceptButton = $ok; $f.CancelButton = $no
+if ($f.ShowDialog() -ne 'OK') { exit 1 }
+[Console]::Out.Write((ConvertTo-Json -Compress @($boxes | ForEach-Object { $_.Text })))
+"""
+
+
 class DialogCancelled(Exception):
     pass
 
@@ -568,6 +650,22 @@ def _mac_form(labels):
     out = result.stdout.strip()
     if not out: raise DialogCancelled
     values = json.loads(out)
+    return values if isinstance(values, list) and len(values) == len(labels) else None
+
+
+def _windows_form(labels):
+    shell = shutil.which('powershell.exe') or shutil.which('powershell')
+    if not shell: return None
+    env = dict(os.environ, SUI_FORM_LABELS=json.dumps(labels, ensure_ascii=False),
+               SUI_FORM_TITLE=DIALOG_TITLE, SUI_FORM_MESSAGE=DIALOG_MESSAGE)
+    # WSL only forwards variables listed in WSLENV to Windows processes.
+    env['WSLENV'] = ':'.join(x for x in [os.environ.get('WSLENV'), 'SUI_FORM_LABELS', 'SUI_FORM_TITLE', 'SUI_FORM_MESSAGE'] if x)
+    result = subprocess.run([shell, '-NoProfile', '-STA', '-NonInteractive', '-Command', WINDOWS_FORM],
+                            capture_output=True, env=env, timeout=600)
+    if result.returncode == 1: raise DialogCancelled
+    if result.returncode != 0: return None
+    values = json.loads(result.stdout.decode('utf-8-sig').strip() or 'null')
+    if isinstance(values, str): values = [values]
     return values if isinstance(values, list) and len(values) == len(labels) else None
 
 
@@ -613,8 +711,11 @@ def _tk_form(labels):
 
 def _form_methods():
     if sys.platform == 'darwin': return [_mac_form, _tk_form]
-    if not _has_display(): return []
-    methods = [_zenity_form] if shutil.which('zenity') else []
+    if WINDOWS: return [_windows_form, _tk_form]
+    # WSL: Windows' own PowerShell can still show a dialog on the user's desktop.
+    methods = [_windows_form] if shutil.which('powershell.exe') else []
+    if not _has_display(): return methods
+    if shutil.which('zenity'): methods.append(_zenity_form)
     return methods + [_tk_form]
 
 
@@ -958,6 +1059,7 @@ def main():
         target = Path(args.output).absolute() if args.output else path.parent/'accounts.html'
         secure_path(target, exists=False)
         run([sys.executable,str(ROOT/'scripts/delivery.py'),'--input',str(out),'--output',str(target)], capture_output=True)
+        restrict_windows(target)
         print('Private local account page generated')
     elif args.stage == 'restore':
         command=restore_command(s,args.archive,args.confirm_target)

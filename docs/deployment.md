@@ -4,9 +4,9 @@
 
 ## 1. 准备本机目标文件
 
-你的电脑上要有 Python 3.9 或更高版本（二维码库对 Python 版本另有要求，见 requirements-local.txt）、OpenSSH、curl，再加上 SSH 密钥或服务商给的初始密码。先看 [服务器准备](buy-vps.md)，确认 SSH 别名连的是你要的那个公网 IP，用户是 root。密码、私钥和 API Key 不要写在命令参数里，也不要发到聊天里。用下面的 `ask-secrets` 弹窗输入，或者自己用编辑器写进 private/。
+你的电脑可以是 Mac、Linux 或 Windows（Windows 未测试），上面要有 Python 3.9 或更高版本（二维码库对 Python 版本另有要求，见 requirements-local.txt）、OpenSSH（用密码接入要 8.4 以上）、curl，再加上 SSH 密钥或服务商给的初始密码。先看 [服务器准备](buy-vps.md)，确认 SSH 别名连的是你要的那个公网 IP，用户是 root。密码、私钥和 API Key 不要写在命令参数里，也不要发到聊天里。用下面的 `ask-secrets` 弹窗输入，或者自己用编辑器写进 private/。
 
-用初始密码接入时，可以用 `init --password-file` 或 `init --ask-password`，这需要本机装了 `sshpass`。已经有密钥的，直接用 `init` 建一个专用的登录方式。两种方式都会先核对 SSH 主机公钥是不是可信的，碰到不认识的指纹不会自动接受。具体怎么准备见 [首次接入步骤](pilot.md)。
+用初始密码接入时，可以用 `init --password-file` 或 `init --ask-password`。密码靠 OpenSSH 8.4 以上自带的 `SSH_ASKPASS` 机制传给 ssh，不用另外装 `sshpass`。Windows 10 自带的 OpenSSH 是 8.1，要换成 Git for Windows 里的 ssh。已经有密钥的，直接用 `init` 建一个专用的登录方式。两种方式都会先核对 SSH 主机公钥是不是可信的，碰到不认识的指纹不会自动接受。具体怎么准备见 [首次接入步骤](pilot.md)。
 
 建议先在本机建一个虚拟环境，装好账号页要用的二维码库，再运行入口：
 

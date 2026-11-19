@@ -201,21 +201,50 @@ class OrchestratorTests(unittest.TestCase):
                 altered={**s,'provider_capabilities':{**cap,field:value}}
                 with self.assertRaises(ValueError):vps.require_provider_readiness(altered)
 
-    def test_password_ssh_uses_inherited_descriptor_and_strict_host(self):
+    def test_password_ssh_uses_askpass_file_and_strict_host(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);root.chmod(0o700);known=root/'known_hosts';known.write_text('key');known.chmod(0o600)
             s={'ip':'192.0.2.1','ssh_alias':'my-vps','ssh_port':22,'known_hosts_file':str(known)}
+            seen={}
             def inspect(args,**kwargs):
-                self.assertEqual(args[0],'sshpass');self.assertEqual(args[1],'-d')
-                fd=int(args[2]);self.assertIn(fd,kwargs['pass_fds'])
-                self.assertEqual(os.read(fd,4096),b'private-password\n')
-                self.assertNotIn('private-password',' '.join(args))
-                self.assertNotIn('SSHPASS',kwargs.get('env',{}))
-                self.assertIn('StrictHostKeyChecking=yes',args)
-                self.assertIn('PubkeyAuthentication=no',args)
+                env=kwargs['env'];self.assertEqual(env['SSH_ASKPASS_REQUIRE'],'force')
+                askpass=Path(env['SSH_ASKPASS']);pw=Path(env['SUI_PW_FILE'])
+                self.assertEqual(pw.read_text(),'private-password\n');self.assertEqual(pw.stat().st_mode&0o777,0o600)
+                self.assertEqual(askpass.stat().st_mode&0o777,0o700)
+                out=subprocess.run([str(askpass)],env=env,capture_output=True,text=True).stdout
+                self.assertEqual(out,'private-password\n')
+                self.assertEqual(args[0],'ssh');self.assertNotIn('private-password',' '.join(args))
+                self.assertNotIn('SSHPASS',env)
+                self.assertIn('StrictHostKeyChecking=yes',args);self.assertIn('PubkeyAuthentication=no',args)
+                seen['dir']=pw.parent
                 return subprocess.CompletedProcess(args,0,b'boot',b'')
-            with patch.object(vps,'run',side_effect=inspect),patch.object(vps.shutil,'which',return_value='/usr/bin/sshpass'):
+            with patch.object(vps,'run',side_effect=inspect),patch.object(vps,'openssh_version',return_value=(9,6)):
                 vps.password_ssh(s,'command','private-password',input=b'public key')
+            self.assertFalse(seen['dir'].exists())
+
+    def test_password_ssh_requires_openssh_84(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);known=root/'known_hosts';known.write_text('key');known.chmod(0o600)
+            s={'ip':'192.0.2.1','ssh_alias':'my-vps','known_hosts_file':str(known)}
+            with patch.object(vps,'openssh_version',return_value=(8,1)),patch.object(vps,'run') as run:
+                with self.assertRaisesRegex(ValueError,'8.4'):vps.password_ssh(s,'command','pw')
+            run.assert_not_called()
+
+    def test_openssh_version_parses_windows_and_unix(self):
+        for text,want in [('OpenSSH_9.6p1 Ubuntu-3ubuntu13, OpenSSL 3.0.13','(9, 6)'),('OpenSSH_for_Windows_8.1p1, LibreSSL 3.0.2','(8, 1)')]:
+            with patch.object(vps.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'',text)):
+                self.assertEqual(str(vps.openssh_version()),want)
+
+    def test_windows_private_paths_use_owner_only_acl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);p=root/'state.json';p.write_text('{}')
+            with patch.object(vps,'WINDOWS',True),patch.object(vps.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'',b'')) as run,patch.object(vps.getpass,'getuser',return_value='alice'):
+                vps.secure_path(p)
+            calls=[c.args[0] for c in run.call_args_list]
+            self.assertIn(['icacls',str(root),'/inheritance:r','/grant:r','alice:(OI)(CI)F'],calls)
+            self.assertIn(['icacls',str(p),'/inheritance:r','/grant:r','alice:F'],calls)
+            with patch.object(vps,'WINDOWS',True),patch.object(vps.subprocess,'run',return_value=subprocess.CompletedProcess([],5,b'',b'')):
+                with self.assertRaises(ValueError):vps.secure_path(p)
 
     def test_password_bootstrap_failed_key_confirmation_preserves_state_and_password(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -555,5 +584,24 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(argv.count('--add-password'),2);self.assertNotIn('pw',argv)
         with patch.object(vps.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','')):
             with self.assertRaises(vps.DialogCancelled):vps._zenity_form(['a'])
+
+    def test_windows_form_passes_labels_by_env_and_parses_json(self):
+        done=subprocess.CompletedProcess([],0,'\ufeff["pw","key"]'.encode('utf-8'),b'')
+        with patch.object(vps.shutil,'which',return_value='powershell.exe'),patch.object(vps.subprocess,'run',return_value=done) as run:
+            self.assertEqual(vps._windows_form(['root 密码','API Key']),['pw','key'])
+        argv=run.call_args.args[0];env=run.call_args.kwargs['env']
+        self.assertNotIn('root 密码',' '.join(argv));self.assertIn('SUI_FORM_LABELS',env['WSLENV'])
+        self.assertEqual(json.loads(env['SUI_FORM_LABELS']),['root 密码','API Key'])
+        one=subprocess.CompletedProcess([],0,b'"pw"',b'')
+        with patch.object(vps.shutil,'which',return_value='powershell.exe'),patch.object(vps.subprocess,'run',return_value=one):
+            self.assertEqual(vps._windows_form(['root 密码']),['pw'])
+        with patch.object(vps.shutil,'which',return_value='powershell.exe'),patch.object(vps.subprocess,'run',return_value=subprocess.CompletedProcess([],1,b'',b'')):
+            with self.assertRaises(vps.DialogCancelled):vps._windows_form(['a'])
+
+    def test_form_methods_per_platform(self):
+        with patch.object(vps,'WINDOWS',True),patch.object(vps.sys,'platform','win32'):
+            self.assertEqual(vps._form_methods(),[vps._windows_form,vps._tk_form])
+        with patch.object(vps,'WINDOWS',False),patch.object(vps.sys,'platform','linux'),patch.object(vps.shutil,'which',side_effect=lambda n:'/x' if n=='powershell.exe' else None),patch.dict(vps.os.environ,{},clear=True):
+            self.assertEqual(vps._form_methods(),[vps._windows_form])
 
 if __name__=='__main__': unittest.main()
