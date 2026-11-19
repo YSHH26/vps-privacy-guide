@@ -34,6 +34,11 @@ GEO_RE = '|'.join(re.escape(name) for name in GEO_FILES)
 PRIVATE_CIDRS = ('10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
                  '192.168.0.0/16', 'fc00::/7', 'fe80::/10')
 GIB = 1024 ** 3
+# Surge has no GEOSITE; this short list mirrors Clash's category-ai-!cn for the main AI services.
+AI_DOMAIN_SUFFIXES = ('openai.com', 'chatgpt.com', 'oaistatic.com', 'oaiusercontent.com', 'sora.com',
+                      'anthropic.com', 'claude.ai', 'claude.com', 'claudeusercontent.com',
+                      'gemini.google.com', 'generativelanguage.googleapis.com', 'aistudio.google.com', 'notebooklm.google.com',
+                      'perplexity.ai', 'x.ai', 'grok.com', 'copilot.microsoft.com', 'mistral.ai', 'cursor.com', 'cursor.sh')
 
 
 def new_token():
@@ -88,12 +93,20 @@ def surge_config(config):
         lines.append(f'{name} = anytls, {host}, {port}, password={atom(node["password"])}, sni={sni}, skip-cert-verify=false')
     if not names:
         raise ValueError('No AnyTLS node exported by S-UI')
+    server = str(ipaddress.IPv4Address(config['nodes'][0]['server']))
+    # Same intent as the Clash profile: LAN and the server itself direct, AI in its own group,
+    # China (by .cn suffix, GeoIP and Tencent's overseas ASN) direct, everything else proxied.
+    rules = [f'IP-CIDR,{server}/32,DIRECT,no-resolve']
+    rules += [('IP-CIDR6,' if ':' in cidr else 'IP-CIDR,') + cidr + ',DIRECT,no-resolve' for cidr in PRIVATE_CIDRS]
+    rules += ['DOMAIN-SUFFIX,' + domain + ',AI' for domain in AI_DOMAIN_SUFFIXES]
+    rules += ['DOMAIN-SUFFIX,cn,DIRECT', 'IP-ASN,132203,DIRECT,no-resolve', 'GEOIP,CN,DIRECT', 'FINAL,PROXY,dns-failed']
     return ('#!MANAGED-CONFIG ' + subscription_urls(config)['surge'] + ' interval=86400 strict=true\n'
             '# AnyTLS only; official minimum Mac 6.4.3 / iOS 5.17.0.\n'
-            '# Client connections, DNS, IPv6, WebRTC and failure behavior still need testing.\n'
+            '# Rules: LAN/server direct, AI group, China direct, rest proxied. Real clients still need testing.\n'
             '[General]\nloglevel = notify\n\n[Proxy]\n' + '\n'.join(lines) +
             '\n\n[Proxy Group]\nPROXY = select, ' + ', '.join(names) +
-            '\n\n[Rule]\nFINAL,PROXY\n')
+            '\nAI = select, PROXY, ' + ', '.join(names) +
+            '\n\n[Rule]\n' + '\n'.join(rules) + '\n')
 
 
 def vless_links(config):

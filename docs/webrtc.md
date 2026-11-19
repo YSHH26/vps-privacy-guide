@@ -31,7 +31,7 @@
 
 ### Surge
 
-打开 **增强模式**（Enhanced Mode）。Surge 用的是本仓库的 AnyTLS 配置，规则是全部走代理。
+打开 **增强模式**（Enhanced Mode）。Surge 用的是本仓库的 AnyTLS 配置，带分流规则：国内 IP 直连，其他走代理。WebRTC 测试网站在海外，会走代理。
 
 ### v2rayN
 

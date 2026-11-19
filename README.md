@@ -99,7 +99,7 @@ AI 会先检查服务器，再安装、配置、测试节点，最后在你电�
 | Windows / macOS / Linux | Clash Verge Rev | Clash 订阅：三个节点，带分流规则 |
 | 软路由 | OpenClash | Clash 订阅 |
 | iPhone / iPad | Shadowrocket | Shadowrocket 订阅：三个节点，没有分流 |
-| Mac / iPhone（已在用 Surge） | Surge | Surge 订阅：AnyTLS，全部走代理 |
+| Mac / iPhone（已在用 Surge） | Surge | Surge 订阅：AnyTLS，带分流规则 |
 | Windows / Android（已在用 v2rayN / v2rayNG） | v2rayN / v2rayNG | v2ray 订阅：两个 VLESS 节点 |
 
 电脑上用 Clash Verge Rev 时，模式选 **规则**，再打开 **虚拟网卡模式**（TUN）。只开系统代理的话，浏览器会通过 WebRTC 把你的真实 IP 露出去。

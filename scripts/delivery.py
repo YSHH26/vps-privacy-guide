@@ -81,7 +81,7 @@ def render_html(config, qr_renderer=offline_qr):
     parts.append('</section><section><h2>订阅与导入</h2><p>订阅通过你的服务器 HTTPS 更新，不经过第三方转换。二维码包含秘密地址，只有点击后才显示。把订阅交给别人就等于把节点交给别人。</p>')
     clients = [('Clash Verge Rev / OpenClash', 'clash', 'Reality、VLESS TLS、AnyTLS 三个节点，带分流规则：国内网站直连，AI 服务单独一组，其他走代理；AUTO 组在主节点不通时换下一个。复制地址，在 Clash Verge Rev 的「订阅」里粘贴并导入，模式选「规则」，再打开「虚拟网卡模式」（TUN）；只开系统代理时 WebRTC 会暴露本地 IP。OpenClash 在「配置订阅」添加同一地址，关闭在线订阅转换。规则文件从你自己的服务器下载。需要 Mihomo 内核支持 AnyTLS（较新的 Clash Verge Rev 自带）。真客户端结果见下方。'),
                ('Shadowrocket（iPhone / iPad）', 'shadowrocket', 'VLESS Reality、VLESS TLS 和 AnyTLS 三个节点，只有节点、没有分流规则。复制地址，在 Shadowrocket 首页右上角「+」选择「Subscribe」，粘贴 URL 后保存；也可以扫描下面的二维码。三个节点分别选中测试一次。AnyTLS 需要较新的 Shadowrocket 版本。还没有真机测试记录，按未测试处理。'),
-               ('Surge', 'surge', 'AnyTLS；官方格式最低为 Mac 6.4.3 / iOS 5.17.0，当前设备能否连接以本页实测记录为准。复制地址，在 Surge 的配置列表中从 URL 下载配置；需要时在配置详情更新。此配置将 FINAL 流量送到代理，没有国内直连或 AI 分流规则。'),
+               ('Surge', 'surge', 'AnyTLS；官方格式最低为 Mac 6.4.3 / iOS 5.17.0，当前设备能否连接以本页实测记录为准。复制地址，在 Surge 的配置列表中从 URL 下载配置；需要时在配置详情更新。此配置带分流规则：国内网站直连，常用 AI 服务单独一组，其他走代理。'),
                ('v2rayN', 'v2ray', 'VLESS Reality 与 VLESS TLS。复制地址，在订阅分组设置中添加分组和 URL，再更新订阅。分别选择两个节点测试。实际应用和内核版本未记录时，按未测试处理。'),
                ('v2rayNG', 'v2ray', 'VLESS Reality 与 VLESS TLS。复制地址，在订阅分组设置中添加 URL，再更新订阅；也可扫描单节点二维码。安卓真机结果见下方。')]
     for name, key, instructions in clients:
